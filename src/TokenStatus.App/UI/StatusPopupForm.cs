@@ -7,17 +7,17 @@ public sealed class StatusPopupForm : Form
 {
     private const int PopupWidth = 460;
     private const int MinimumPopupHeight = 460;
-    private const int ScreenEdgeGap = 8;
+    private const int ScreenEdgeGap = 4;
 
     private readonly Action _refresh;
     private readonly Action _openDashboard;
     private readonly Action _openSettings;
     private readonly Action _exit;
     private readonly Action<AwakeMode, TimeSpan?> _setAwake;
-    private readonly FlowLayoutPanel _content;
+    private readonly VerticalStackLayout _content;
     private readonly Label _updatedLabel;
     private readonly ProviderHealthIndicator _codexHealthIndicator;
-    private readonly FlowLayoutPanel _limitsPanel;
+    private readonly VerticalStackLayout _limitsPanel;
     private readonly Label _todayTokensLabel;
     private readonly Label _lifetimeTokensLabel;
     private readonly Label _codexErrorLabel;
@@ -27,6 +27,9 @@ public sealed class StatusPopupForm : Form
     private readonly Label _openCodeCacheLabel;
     private readonly Label _openCodeErrorLabel;
     private readonly Label _awakeLabel;
+#if DEBUG
+    private readonly LayoutInspectorOverlay _layoutInspector;
+#endif
     private AppSnapshot _snapshot;
 
     public StatusPopupForm(
@@ -55,18 +58,27 @@ public sealed class StatusPopupForm : Form
         Width = PopupWidth;
         Height = 590;
 
-        _content = new FlowLayoutPanel
+        _content = new VerticalStackLayout
         {
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoScroll = true,
-            Padding = new Padding(18, 14, 18, 14),
+            AutoSize = false,
+            AutoScroll = false,
+            Padding = new Padding(
+                LayoutMetrics.Medium,
+                LayoutMetrics.Small,
+                LayoutMetrics.Medium,
+                LayoutMetrics.Small),
             Tag = "background"
         };
         Controls.Add(_content);
 
-        var title = new TableLayoutPanel { Width = 402, Height = 40, ColumnCount = 2, Margin = new Padding(0, 0, 0, 4) };
+        var title = new TableLayoutPanel
+        {
+            Height = 40,
+            ColumnCount = 2,
+            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall),
+            Padding = new Padding(LayoutMetrics.Large, 0, LayoutMetrics.Large, 0)
+        };
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
         var titleLabel = CreateLabel("TokenStatus", 15, FontStyle.Bold);
@@ -75,7 +87,7 @@ public sealed class StatusPopupForm : Form
         var refreshButton = CreateButton("Refresh", (_, _) => _refresh());
         refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         title.Controls.Add(refreshButton, 1, 0);
-        _content.Controls.Add(title);
+        _content.AddRow(title);
 
         _codexErrorLabel = CreateErrorLabel();
         _limitsPanel = CreateLimitsPanel();
@@ -83,12 +95,12 @@ public sealed class StatusPopupForm : Form
         _lifetimeTokensLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
 
         var codexCard = new SectionCard();
-        _content.Controls.Add(codexCard);
+        _content.AddRow(codexCard);
         _codexHealthIndicator = AddProviderSectionHeader(codexCard, "Codex", ProviderIconKind.Codex);
-        codexCard.Controls.Add(_limitsPanel);
-        codexCard.Controls.Add(_todayTokensLabel);
-        codexCard.Controls.Add(_lifetimeTokensLabel);
-        codexCard.Controls.Add(_codexErrorLabel);
+        codexCard.AddRow(_limitsPanel);
+        codexCard.AddRow(_todayTokensLabel);
+        codexCard.AddRow(_lifetimeTokensLabel);
+        codexCard.AddRow(_codexErrorLabel);
 
         _openCodeSummaryLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
         _openCodeTokensLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
@@ -96,46 +108,44 @@ public sealed class StatusPopupForm : Form
         _openCodeErrorLabel = CreateErrorLabel();
 
         var openCodeCard = new SectionCard();
-        _content.Controls.Add(openCodeCard);
+        _content.AddRow(openCodeCard);
         _openCodeHealthIndicator = AddProviderSectionHeader(openCodeCard, "OpenCode", ProviderIconKind.OpenCode);
-        openCodeCard.Controls.Add(_openCodeSummaryLabel);
-        openCodeCard.Controls.Add(_openCodeTokensLabel);
-        openCodeCard.Controls.Add(_openCodeCacheLabel);
-        openCodeCard.Controls.Add(CreateButton("Open Go Usage Dashboard", (_, _) => _openDashboard(), 250));
-        openCodeCard.Controls.Add(_openCodeErrorLabel);
+        openCodeCard.AddRow(_openCodeSummaryLabel);
+        openCodeCard.AddRow(_openCodeTokensLabel);
+        openCodeCard.AddRow(_openCodeCacheLabel);
+        openCodeCard.AddRow(CreateButton("Open Go Usage Dashboard", (_, _) => _openDashboard(), 250), stretch: false);
+        openCodeCard.AddRow(_openCodeErrorLabel);
 
         _awakeLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
         var awakeCard = new SectionCard();
-        _content.Controls.Add(awakeCard);
+        _content.AddRow(awakeCard);
         AddSectionHeader(awakeCard, "Keep awake");
-        awakeCard.Controls.Add(_awakeLabel);
+        awakeCard.AddRow(_awakeLabel);
         var awakeButtons = new FlowLayoutPanel
         {
-            Width = 382,
             Height = 40,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(0, 2, 0, 2)
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
         };
         awakeButtons.Controls.Add(CreateButton("Off", (_, _) => _setAwake(AwakeMode.Off, null), 55));
         awakeButtons.Controls.Add(CreateButton("System", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(1)), 90));
         awakeButtons.Controls.Add(CreateButton("System + display", (_, _) => _setAwake(AwakeMode.SystemAndDisplay, TimeSpan.FromHours(1)), 180));
-        awakeCard.Controls.Add(awakeButtons);
+        awakeCard.AddRow(awakeButtons);
         var durationButtons = new FlowLayoutPanel
         {
-            Width = 382,
             Height = 40,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(0, 0, 0, 4)
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
         };
         durationButtons.Controls.Add(CreateButton("30m", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromMinutes(30)), 55));
         durationButtons.Controls.Add(CreateButton("2h", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(2)), 55));
         durationButtons.Controls.Add(CreateButton("4h", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(4)), 55));
         durationButtons.Controls.Add(CreateButton("Until off", (_, _) => _setAwake(AwakeMode.System, null), 100));
-        awakeCard.Controls.Add(durationButtons);
+        awakeCard.AddRow(durationButtons);
 
-        var footer = new TableLayoutPanel { Width = 402, Height = 40, ColumnCount = 3, Margin = new Padding(0, 4, 0, 0) };
+        var footer = new TableLayoutPanel { Height = 40, ColumnCount = 3, Margin = new Padding(0, 4, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
@@ -143,7 +153,19 @@ public sealed class StatusPopupForm : Form
         footer.Controls.Add(_updatedLabel, 0, 0);
         footer.Controls.Add(CreateButton("Settings", (_, _) => _openSettings(), 105), 1, 0);
         footer.Controls.Add(CreateButton("Exit", (_, _) => _exit(), 60), 2, 0);
-        _content.Controls.Add(footer);
+        _content.AddRow(footer);
+
+#if DEBUG
+        _layoutInspector = new LayoutInspectorOverlay(this);
+        Disposed += (_, _) => _layoutInspector.Dispose();
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible)
+            {
+                _layoutInspector.Disable();
+            }
+        };
+#endif
 
         Resize += (_, _) => UpdateRoundedRegion();
         HandleCreated += (_, _) => UpdateRoundedRegion();
@@ -151,12 +173,30 @@ public sealed class StatusPopupForm : Form
         Shown += (_, _) => PositionNearCursor();
         KeyDown += (_, args) =>
         {
+#if DEBUG
+            if (args.Control && args.Shift && args.KeyCode == Keys.I)
+            {
+                _layoutInspector.Toggle();
+                args.Handled = true;
+                args.SuppressKeyPress = true;
+                return;
+            }
+#endif
             if (args.KeyCode == Keys.Escape)
             {
                 Hide();
             }
         };
-        Deactivate += (_, _) => Hide();
+        Deactivate += (_, _) =>
+        {
+#if DEBUG
+            if (_layoutInspector.IsInspecting)
+            {
+                return;
+            }
+#endif
+            Hide();
+        };
 
         UpdateSnapshot(initialSnapshot);
         ApplyTheme();
@@ -224,7 +264,7 @@ public sealed class StatusPopupForm : Form
     private void UpdateRateLimitRows(AppSnapshot snapshot, DateTimeOffset now)
     {
         _limitsPanel.SuspendLayout();
-        _limitsPanel.Controls.Clear();
+        _limitsPanel.ClearRows();
         var buckets = snapshot.CodexRateLimits.Value?.Buckets ?? [];
         var windows = buckets
             .SelectMany(bucket => new[]
@@ -236,7 +276,7 @@ public sealed class StatusPopupForm : Form
             .ToArray();
         if (windows.Length == 0)
         {
-            _limitsPanel.Controls.Add(CreateLabel("Quota windows: Not provided", 9, FontStyle.Regular));
+            _limitsPanel.AddRow(CreateLabel("Quota windows: Not provided", 9, FontStyle.Regular));
         }
         else
         {
@@ -267,19 +307,19 @@ public sealed class StatusPopupForm : Form
             title,
             Math.Clamp(100 - window.UsedPercent, 0, 100),
             FormatQuotaReset(window.ResetsAt, now));
-        _limitsPanel.Controls.Add(view);
+        _limitsPanel.AddRow(view);
         WindowsTheme.Apply(view);
     }
 
-    private static void AddSectionHeader(FlowLayoutPanel target, string text)
+    private static void AddSectionHeader(SectionCard target, string text)
     {
-        var label = CreateLabel(text, 10, FontStyle.Bold, new Padding(0, 0, 0, 2));
+        var label = CreateLabel(text, 10, FontStyle.Bold, new Padding(0, 0, 0, LayoutMetrics.XSmall));
         label.Tag = "accent";
-        target.Controls.Add(label);
+        target.AddRow(label);
     }
 
     private static ProviderHealthIndicator AddProviderSectionHeader(
-        FlowLayoutPanel target,
+        SectionCard target,
         string text,
         ProviderIconKind iconKind)
     {
@@ -289,11 +329,10 @@ public sealed class StatusPopupForm : Form
         var headerHeight = Math.Max(24, label.PreferredHeight + 2);
         var header = new FlowLayoutPanel
         {
-            Width = 382,
             Height = headerHeight,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(0, 0, 0, 2),
+            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall),
             Padding = new Padding(0)
         };
         var icon = new ProviderIcon(iconKind)
@@ -307,20 +346,15 @@ public sealed class StatusPopupForm : Form
         header.Controls.Add(icon);
         header.Controls.Add(label);
         header.Controls.Add(health);
-        target.Controls.Add(header);
+        target.AddRow(header);
         return health;
     }
 
-    private static FlowLayoutPanel CreateLimitsPanel()
+    private static VerticalStackLayout CreateLimitsPanel()
     {
-        return new FlowLayoutPanel
+        return new VerticalStackLayout
         {
-            Width = 382,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            Margin = new Padding(0, 3, 0, 3),
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, LayoutMetrics.XSmall),
             Padding = new Padding(0)
         };
     }
@@ -374,7 +408,7 @@ public sealed class StatusPopupForm : Form
             AutoSize = true,
             MaximumSize = new Size(382, 0),
             Font = new Font("Segoe UI", size, style),
-            Margin = margin ?? new Padding(0, 1, 0, 1),
+            Margin = margin ?? new Padding(0),
             Padding = new Padding(0)
         };
     }
@@ -393,9 +427,9 @@ public sealed class StatusPopupForm : Form
         {
             Text = text,
             Width = width,
-            Height = Math.Max(34, TextRenderer.MeasureText(text, Control.DefaultFont).Height + 12),
+            Height = Math.Max(36, TextRenderer.MeasureText(text, Control.DefaultFont).Height + 12),
             AutoSize = false,
-            Margin = new Padding(0, 0, 5, 0),
+            Margin = new Padding(0, 0, LayoutMetrics.Small, 0),
             UseVisualStyleBackColor = true
         };
         button.Click += click;
@@ -406,11 +440,15 @@ public sealed class StatusPopupForm : Form
     {
         var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
         var maximumHeight = Math.Max(200, workingArea.Height - (ScreenEdgeGap * 2));
-        var contentHeight = _content.Padding.Vertical
+        var measuredContentHeight = _content.Padding.Vertical
             + _content.Controls.Cast<Control>()
                 .Where(control => control.Visible)
                 .Sum(control => control.Height + control.Margin.Vertical)
             + 2;
+        var contentHeight = Math.Max(
+            measuredContentHeight,
+            _content.PreferredSize.Height + Padding.Vertical);
+        _content.AutoScroll = contentHeight > maximumHeight;
         Height = Math.Min(Math.Max(MinimumPopupHeight, contentHeight), maximumHeight);
 
         var left = workingArea.Left + ScreenEdgeGap;

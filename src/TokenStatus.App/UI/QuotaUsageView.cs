@@ -4,22 +4,21 @@ internal sealed class QuotaUsageView : TableLayoutPanel
 {
     public QuotaUsageView(string title, int remainingPercent, string resetText)
     {
-        Width = 382;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         ColumnCount = 1;
         RowCount = 3;
-        Margin = new Padding(0, 3, 0, 4);
+        Margin = new Padding(0, LayoutMetrics.XSmall, 0, LayoutMetrics.XSmall);
         Padding = new Padding(0);
-        ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 382));
+        ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         RowStyles.Add(new RowStyle(SizeType.AutoSize));
         RowStyles.Add(new RowStyle(SizeType.AutoSize));
         RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var header = new TableLayoutPanel
         {
-            Width = 382,
             Height = 24,
+            Dock = DockStyle.Fill,
             ColumnCount = 2,
             Margin = new Padding(0),
             Padding = new Padding(0)
@@ -32,7 +31,7 @@ internal sealed class QuotaUsageView : TableLayoutPanel
             Text = title,
             AutoSize = true,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Margin = new Padding(0, 1, 0, 1)
+            Margin = new Padding(0)
         }, 0, 0);
 
         header.Controls.Add(new Label
@@ -42,14 +41,14 @@ internal sealed class QuotaUsageView : TableLayoutPanel
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.TopRight,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Margin = new Padding(0, 1, 0, 1)
+            Margin = new Padding(0)
         }, 1, 0);
 
         var bar = new RemainingUsageBar(remainingPercent)
         {
-            Width = 382,
             Height = 14,
-            Margin = new Padding(0, 0, 0, 2)
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall)
         };
 
         var reset = new Label

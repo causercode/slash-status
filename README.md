@@ -18,6 +18,16 @@ dotnet test .\TokenStatus.sln -c Release --no-build
 
 The application can be launched from `src\TokenStatus.App\bin\Debug\net10.0-windows\TokenStatus.exe` during development. It starts with a gray tray icon while provider data is loading.
 
+### Debug layout inspector
+
+Debug builds include a layout overlay for the tray popup. Open the popup and press `Ctrl+Shift+I` to toggle it. Hover over a control to see its runtime bounds, margin, and padding. Red outlines show control bounds, yellow outlines show margins, and blue outlines show padded content areas.
+
+The inspector is excluded from Release and published builds. To use it:
+
+```powershell
+dotnet run --project .\src\TokenStatus.App\TokenStatus.App.csproj -c Debug
+```
+
 ## VS Code
 
 The workspace includes `.vscode/settings.json` and `.vscode/tasks.json`. They point C# Dev Kit and C# at the user-local SDK installed at `C:\Users\Daniel\.dotnet-tokenstatus-sdk\dotnet.exe`, and provide build, test, and publish tasks. C# Dev Kit and the C# extension are both required; reload the VS Code window after installing the SDK so the extension host and integrated terminal receive the updated environment.

@@ -2,21 +2,18 @@ using System.Drawing.Drawing2D;
 
 namespace TokenStatus.App.UI;
 
-internal sealed class SectionCard : FlowLayoutPanel
+internal sealed class SectionCard : VerticalStackLayout
 {
     private const int CornerRadius = 10;
 
     public SectionCard()
     {
-        Width = 402;
-        MinimumSize = new Size(402, 0);
-        MaximumSize = new Size(402, 0);
-        AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        FlowDirection = FlowDirection.TopDown;
-        WrapContents = false;
-        Padding = new Padding(10, 5, 10, 6);
-        Margin = new Padding(0, 2, 0, 3);
+        Padding = new Padding(
+            LayoutMetrics.Large,
+            LayoutMetrics.Small,
+            LayoutMetrics.Large,
+            LayoutMetrics.Small);
+        Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall);
         Tag = "surface";
         SetStyle(
             ControlStyles.AllPaintingInWmPaint |
