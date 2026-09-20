@@ -1,8 +1,14 @@
-# TokenStatus
+# /status
 
-TokenStatus is a portable Windows tray application for viewing local Codex quota/activity and OpenCode local activity. It runs as the current user and does not read either tool's credential files.
+**/status** is a portable Windows tray application for viewing Codex quota/activity and authoritative OpenCode Go subscription limits. It runs as the current user and does not read either tool's credential files.
 
-Important: OpenCode values are explicitly **Local activity** from the current computer's seven-day session database. They are not authoritative OpenCode Go quota. The tray panel links to the official Go usage dashboard at <https://opencode.ai/workspace>.
+OpenCode Go's rolling five-hour, weekly, and monthly percentages come from the official account-wide usage API.
+
+## Configure OpenCode Go quota
+
+Open **Settings**, paste the API key issued for your OpenCode Go subscription, and use **Test** before saving. The key is stored as a per-user generic credential in Windows Credential Manager under `TokenStatus:OpenCodeGoApiKey`; it is never written to `settings.json`, logs, process arguments, or OpenCode's credential files. **Clear** schedules the saved credential for removal when settings are saved.
+
+The key is sent only as a bearer credential to the hardcoded HTTPS endpoint `https://opencode.ai/zen/go/v1/usage`. Automatic HTTP redirects are disabled. The same key can authorize model inference, so it should be treated as a high-value secret and revoked from the OpenCode console if the computer or Windows account is compromised.
 
 ## Build
 
@@ -53,12 +59,14 @@ The published executable needs no separately installed .NET runtime. Extract it 
 ## Runtime behavior
 
 - Codex data comes from the documented `codex app-server --listen stdio://` JSONL protocol and reuses the CLI's existing authentication.
-- OpenCode data comes from the fixed, read-only aggregate query run through `opencode db ... --format json`.
+- OpenCode Go quota comes from the official account-wide usage endpoint using the API key explicitly supplied in Settings.
 - CLI failures preserve the last successful value and expose a stale/error state rather than replacing it with zeroes.
 - Keep-awake uses `SetThreadExecutionState` on one dedicated thread and always clears state during disable, expiry, and shutdown.
+- Quota notifications use Windows notification-area alerts. They fire once when a Codex or OpenCode Go window crosses 25% or 5% remaining, and again when the window resets. They can be disabled in Settings.
+- Debug builds add **Test notification (Debug)** to the tray menu, with previews for each notification type.
 - Settings and redacted rolling logs are stored below `%LOCALAPPDATA%\TokenStatus`.
 - Start with Windows uses only `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
 ## Test CLI
 
-`tests\TokenStatus.TestCli` provides deterministic Codex app-server/OpenCode command behavior for infrastructure integration tests and can be extended with delayed, malformed, or failing responses.
+`tests\TokenStatus.TestCli` provides deterministic Codex app-server behavior for infrastructure integration tests and can be extended with delayed, malformed, or failing responses.

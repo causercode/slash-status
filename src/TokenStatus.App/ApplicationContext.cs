@@ -17,12 +17,14 @@ namespace TokenStatus.App;
 
 public sealed class TokenStatusApplicationContext : ApplicationContext
 {
-    private const string DashboardUrl = OpenCodeUsageClient.GoUsageDashboardUrl;
+    private const string DashboardUrl = "https://opencode.ai/workspace";
     private readonly Mutex _instanceMutex;
     private readonly SynchronizationContext _uiContext;
     private readonly IRedactedLog _log;
     private readonly JsonSettingsStore _settingsStore;
+    private readonly WindowsOpenCodeGoCredentialStore _openCodeGoCredentials;
     private readonly SnapshotStore _snapshots;
+    private readonly QuotaNotificationTracker _quotaNotifications = new();
     private readonly WindowsAwakeController _awake;
     private readonly CurrentUserStartupManager _startupManager = new();
     private readonly NotifyIcon _tray;
@@ -31,7 +33,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
     private StatusPopupForm? _popup;
     private RefreshCoordinator? _coordinator;
     private ICodexUsageClient? _codexClient;
-    private IOpenCodeUsageClient? _openCodeClient;
+    private IOpenCodeGoQuotaClient? _openCodeGoClient;
     private AppSettings _settings = new();
     private Icon? _trayIcon;
     private int _shuttingDown;
@@ -42,6 +44,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _log = new RedactingFileLog();
         _settingsStore = new JsonSettingsStore(_log);
+        _openCodeGoCredentials = new WindowsOpenCodeGoCredentialStore();
         _snapshots = new SnapshotStore(AppSnapshot.Initial(DateTimeOffset.UtcNow));
         _awake = new WindowsAwakeController();
         SystemEvents.PowerModeChanged += PowerModeChanged;
@@ -56,10 +59,11 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         {
             Icon = _trayIcon,
             Visible = true,
-            Text = "TokenStatus - Loading",
+            Text = $"{AppBrand.DisplayName} - Loading",
             ContextMenuStrip = _trayMenu
         };
         _tray.MouseUp += TrayMouseUp;
+        _tray.BalloonTipClicked += (_, _) => _uiContext.Post(_ => ShowPopup(), null);
         _trayMenu.Opening += (_, _) => WindowsTheme.Apply(_trayMenu);
         SystemEvents.UserPreferenceChanged += UserPreferenceChanged;
 
@@ -68,7 +72,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
 
     private void BuildTrayMenu()
     {
-        var open = new ToolStripMenuItem("Open TokenStatus");
+        var open = new ToolStripMenuItem($"Open {AppBrand.DisplayName}");
         open.Click += (_, _) => ShowPopup();
         _trayMenu.Items.Add(open);
 
@@ -91,8 +95,22 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         _trayMenu.Items.Add(_startWithWindowsMenuItem);
 
         var settings = new ToolStripMenuItem("Settings");
-        settings.Click += (_, _) => ShowSettings();
+        settings.Click += (_, _) => _uiContext.Post(_ => ShowSettings(), null);
         _trayMenu.Items.Add(settings);
+
+#if DEBUG
+        var testNotification = new ToolStripMenuItem("Test notification (Debug)");
+        testNotification.DropDownItems.Add(CreateTestNotificationMenuItem(
+            "25% remaining",
+            new QuotaNotification(QuotaNotificationKind.Low, "Codex", "daily", 25)));
+        testNotification.DropDownItems.Add(CreateTestNotificationMenuItem(
+            "5% remaining",
+            new QuotaNotification(QuotaNotificationKind.Critical, "Codex", "daily", 5)));
+        testNotification.DropDownItems.Add(CreateTestNotificationMenuItem(
+            "Quota reset",
+            new QuotaNotification(QuotaNotificationKind.Reset, "Codex", "daily", 100)));
+        _trayMenu.Items.Add(testNotification);
+#endif
 
         _trayMenu.Items.Add(new ToolStripSeparator());
         var exit = new ToolStripMenuItem("Exit");
@@ -119,6 +137,15 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         return item;
     }
 
+#if DEBUG
+    private ToolStripMenuItem CreateTestNotificationMenuItem(string text, QuotaNotification notification)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => ShowQuotaNotifications([notification], ignorePreference: true);
+        return item;
+    }
+#endif
+
     private async Task InitializeAsync()
     {
         try
@@ -142,11 +169,13 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             _coordinator = null;
         }
 
+        _quotaNotifications.Reset();
+
         _codexClient = new CodexAppServerClient(_settings.CodexExecutablePath, _log);
-        _openCodeClient = new OpenCodeUsageClient(_settings.OpenCodeExecutablePath, log: _log);
+        _openCodeGoClient = new OpenCodeGoQuotaClient(_openCodeGoCredentials, log: _log);
         _coordinator = new RefreshCoordinator(
             _codexClient,
-            _openCodeClient,
+            _openCodeGoClient,
             _awake,
             _snapshots,
             new SystemClock(),
@@ -183,6 +212,37 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         _trayIcon = nextIcon;
         _tray.Text = StatusViewModel.BuildTooltip(snapshot);
         _popup?.UpdateSnapshot(snapshot);
+        ShowQuotaNotifications(_quotaNotifications.Evaluate(snapshot));
+    }
+
+    private void ShowQuotaNotifications(
+        IReadOnlyList<QuotaNotification> notifications,
+        bool ignorePreference = false)
+    {
+        if ((!ignorePreference && !_settings.QuotaNotificationsEnabled) || notifications.Count == 0)
+        {
+            return;
+        }
+
+        var lines = notifications.Select(notification =>
+            notification.Kind == QuotaNotificationKind.Reset
+                ? $"{notification.Provider} {notification.Window}: reset, {notification.RemainingPercent}% available"
+                : $"{notification.Provider} {notification.Window}: {notification.RemainingPercent}% left");
+        var message = string.Join(Environment.NewLine, lines);
+        if (message.Length > 255)
+        {
+            message = message[..252] + "...";
+        }
+
+        var title = notifications.Count == 1
+            ? $"{notifications[0].Provider} quota"
+            : $"{AppBrand.DisplayName} quota update";
+        var icon = notifications.Any(notification => notification.Kind == QuotaNotificationKind.Critical)
+            ? ToolTipIcon.Error
+            : notifications.Any(notification => notification.Kind == QuotaNotificationKind.Low)
+                ? ToolTipIcon.Warning
+                : ToolTipIcon.Info;
+        _tray.ShowBalloonTip(8000, title, message, icon);
     }
 
     private void TrayMouseUp(object? sender, MouseEventArgs e)
@@ -217,8 +277,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         _popup ??= new StatusPopupForm(
             _snapshots.Current,
             () => _ = RefreshNowAsync(),
-            OpenDashboard,
-            ShowSettings,
+            () => _uiContext.Post(_ => ShowSettings(), null),
             (mode, duration) => _awake.Start(mode, duration),
             ExitApplication);
         _popup.UpdateSnapshot(_snapshots.Current);
@@ -260,13 +319,57 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
 
     private void ShowSettings()
     {
-        _popup?.Hide();
-        using var form = new SettingsForm(_settings, SaveSettingsAsync, _log is RedactingFileLog fileLog ? fileLog.LogDirectory : string.Empty);
-        form.ShowDialog();
+        try
+        {
+            using var form = new SettingsForm(
+                _settings,
+                _openCodeGoCredentials.IsConfigured(),
+                TestOpenCodeGoApiKeyAsync,
+                SaveSettingsAsync,
+                _log is RedactingFileLog fileLog ? fileLog.LogDirectory : string.Empty);
+            form.ShowDialog();
+        }
+        catch (Exception exception)
+        {
+            _log.Error("app", "settings", "settings_open_failed", exception);
+            MessageBox.Show(
+                exception.Message,
+                $"Could not open {AppBrand.DisplayName} settings",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
-    private async Task SaveSettingsAsync(AppSettings settings)
+    private async Task<OpenCodeGoQuota> TestOpenCodeGoApiKeyAsync(string? apiKey, CancellationToken cancellationToken)
     {
+        using var client = new OpenCodeGoQuotaClient(_openCodeGoCredentials, log: _log);
+        return apiKey is null
+            ? await client.GetQuotaAsync(cancellationToken).ConfigureAwait(true)
+            : await client.GetQuotaAsync(apiKey, cancellationToken).ConfigureAwait(true);
+    }
+
+    private async Task SaveSettingsAsync(AppSettings settings, string? openCodeGoApiKey, bool deleteOpenCodeGoApiKey)
+    {
+        var credentialChanged = deleteOpenCodeGoApiKey || !string.IsNullOrWhiteSpace(openCodeGoApiKey);
+        if (deleteOpenCodeGoApiKey)
+        {
+            _openCodeGoCredentials.DeleteApiKey();
+        }
+        else if (!string.IsNullOrWhiteSpace(openCodeGoApiKey))
+        {
+            _openCodeGoCredentials.SaveApiKey(openCodeGoApiKey);
+        }
+
+        if (credentialChanged)
+        {
+            var now = DateTimeOffset.UtcNow;
+            _snapshots.Update(snapshot => snapshot with
+            {
+                CapturedAt = now,
+                OpenCodeGoQuota = ProviderResult<OpenCodeGoQuota>.Loading(now)
+            });
+        }
+
         await _settingsStore.SaveAsync(settings, CancellationToken.None).ConfigureAwait(true);
         try
         {
@@ -328,7 +431,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             {
                 await _coordinator.DisposeAsync().ConfigureAwait(true);
             }
-            _openCodeClient = null;
+            _openCodeGoClient = null;
             _codexClient = null;
         }
         catch (Exception exception)

@@ -5,7 +5,7 @@ public sealed record AppSnapshot(
     ProviderResult<CodexAccountInfo> CodexAccount,
     ProviderResult<CodexRateLimits> CodexRateLimits,
     ProviderResult<CodexTokenUsage> CodexTokenUsage,
-    ProviderResult<OpenCodeLocalUsage> OpenCodeUsage,
+    ProviderResult<OpenCodeGoQuota> OpenCodeGoQuota,
     AwakeState Awake)
 {
     public static AppSnapshot Initial(DateTimeOffset now) => new(
@@ -13,6 +13,6 @@ public sealed record AppSnapshot(
         ProviderResult<CodexAccountInfo>.Loading(now),
         ProviderResult<CodexRateLimits>.Loading(now),
         ProviderResult<CodexTokenUsage>.Loading(now),
-        ProviderResult<OpenCodeLocalUsage>.Loading(now),
+        ProviderResult<OpenCodeGoQuota>.Loading(now),
         AwakeState.Off);
 }

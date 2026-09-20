@@ -8,10 +8,10 @@ public sealed record AppSettings
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public string? CodexExecutablePath { get; init; }
-    public string? OpenCodeExecutablePath { get; init; }
     public int CodexRateLimitRefreshSeconds { get; init; } = 120;
     public int CodexUsageRefreshSeconds { get; init; } = 600;
     public int OpenCodeRefreshSeconds { get; init; } = 120;
+    public bool QuotaNotificationsEnabled { get; init; } = true;
     public bool StartWithWindows { get; init; }
 
     public AppSettings Normalize()

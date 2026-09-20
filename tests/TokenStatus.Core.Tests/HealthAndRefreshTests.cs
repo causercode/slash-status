@@ -52,6 +52,38 @@ public sealed class HealthAndRefreshTests
     }
 
     [Fact]
+    public void OpenCodeRateLimitIsRed()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var quota = new OpenCodeGoQuota(
+            new OpenCodeQuotaWindow(12, now.AddHours(1), false),
+            new OpenCodeQuotaWindow(44, now.AddDays(2), false),
+            new OpenCodeQuotaWindow(100, now.AddDays(12), true));
+        var snapshot = AppSnapshot.Initial(now) with
+        {
+            OpenCodeGoQuota = new ProviderResult<OpenCodeGoQuota>(
+                ProviderHealth.Healthy, quota, now, now, null, null)
+        };
+
+        Assert.Equal(TrayHealth.Red, OverallHealthCalculator.Calculate(snapshot));
+    }
+
+    [Fact]
+    public void UnconfiguredOpenCodeGoDoesNotDegradeAnotherHealthyProvider()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = AppSnapshot.Initial(now) with
+        {
+            OpenCodeGoQuota = new ProviderResult<OpenCodeGoQuota>(
+                ProviderHealth.NotConfigured, null, now, null, "Configure a key.", "not_configured"),
+            CodexTokenUsage = new ProviderResult<CodexTokenUsage>(
+                ProviderHealth.Healthy, new CodexTokenUsage(10, 5, null, 1, 2, []), now, now, null, null)
+        };
+
+        Assert.Equal(TrayHealth.Green, OverallHealthCalculator.Calculate(snapshot));
+    }
+
+    [Fact]
     public async Task ConcurrentManualRefreshesShareAnActiveRequest()
     {
         var now = DateTimeOffset.UtcNow;
@@ -60,12 +92,12 @@ public sealed class HealthAndRefreshTests
         {
             RateLimits = releaseRateLimits.Task
         };
-        var openCode = new FakeOpenCode();
+        var openCodeGo = new FakeOpenCodeGo();
         using var awake = new FakeAwake();
         var store = new SnapshotStore(AppSnapshot.Initial(now));
         await using var coordinator = new RefreshCoordinator(
             codex,
-            openCode,
+            openCodeGo,
             awake,
             store,
             new FixedClock(now),
@@ -85,28 +117,29 @@ public sealed class HealthAndRefreshTests
     public async Task FailurePreservesLastKnownGoodValue()
     {
         var now = DateTimeOffset.UtcNow;
-        var openCode = new FakeOpenCode
-        {
-            Next = new OpenCodeLocalUsage(3, 1.25m, 10, 20, 30, 40, 50)
-        };
         var codex = new FakeCodex();
+        var expected = new OpenCodeGoQuota(
+            new OpenCodeQuotaWindow(11, now.AddHours(2), false),
+            new OpenCodeQuotaWindow(22, now.AddDays(2), false),
+            new OpenCodeQuotaWindow(33, now.AddDays(12), false));
+        var openCodeGo = new FakeOpenCodeGo { Next = expected };
         using var awake = new FakeAwake();
         var store = new SnapshotStore(AppSnapshot.Initial(now));
         await using var coordinator = new RefreshCoordinator(
             codex,
-            openCode,
+            openCodeGo,
             awake,
             store,
             new FixedClock(now),
             new RefreshIntervals(TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(2)));
 
         await coordinator.RefreshNowAsync();
-        openCode.Fail = true;
+        openCodeGo.Fail = true;
         await coordinator.RefreshNowAsync();
 
-        var result = store.Current.OpenCodeUsage;
+        var result = store.Current.OpenCodeGoQuota;
         Assert.Equal(ProviderHealth.Stale, result.Health);
-        Assert.Equal(new OpenCodeLocalUsage(3, 1.25m, 10, 20, 30, 40, 50), result.Value);
+        Assert.Equal(expected, result.Value);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
@@ -149,12 +182,16 @@ public sealed class HealthAndRefreshTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class FakeOpenCode : IOpenCodeUsageClient
+    private sealed class FakeOpenCodeGo : IOpenCodeGoQuotaClient
     {
-        public OpenCodeLocalUsage Next { get; set; } = new(0, 0, 0, 0, 0, 0, 0);
+        public OpenCodeGoQuota Next { get; set; } =
+            new OpenCodeGoQuota(
+                new OpenCodeQuotaWindow(10, DateTimeOffset.UtcNow.AddHours(1), false),
+                new OpenCodeQuotaWindow(20, DateTimeOffset.UtcNow.AddDays(1), false),
+                new OpenCodeQuotaWindow(30, DateTimeOffset.UtcNow.AddDays(10), false));
         public bool Fail { get; set; }
 
-        public Task<OpenCodeLocalUsage> GetSevenDayUsageAsync(CancellationToken cancellationToken)
+        public Task<OpenCodeGoQuota> GetQuotaAsync(CancellationToken cancellationToken)
         {
             if (Fail)
             {

@@ -14,12 +14,7 @@ internal static class Program
         return args[0].Equals("codex", StringComparison.OrdinalIgnoreCase) ||
                args[0].Equals("app-server", StringComparison.OrdinalIgnoreCase)
             ? RunCodex()
-            : args[0].Equals("--version", StringComparison.OrdinalIgnoreCase) ||
-              args[0].Equals("db", StringComparison.OrdinalIgnoreCase)
-                ? RunOpenCode(args)
-            : args[0].Equals("opencode", StringComparison.OrdinalIgnoreCase)
-                ? RunOpenCode(args.Skip(1).ToArray())
-                : 2;
+            : 2;
     }
 
     private static int RunCodex()
@@ -68,23 +63,6 @@ internal static class Program
         return 0;
     }
 
-    private static int RunOpenCode(IReadOnlyList<string> args)
-    {
-        if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
-        {
-            Console.WriteLine("1.18.31");
-            return 0;
-        }
-
-        if (args.Contains("--fail", StringComparer.OrdinalIgnoreCase))
-        {
-            Console.Error.WriteLine("no such table: session");
-            return 1;
-        }
-
-        Console.WriteLine("[{\"sessions\":8,\"total_cost\":2.91,\"input_tokens\":129000,\"output_tokens\":78000,\"reasoning_tokens\":12000,\"cache_read_tokens\":8900000,\"cache_write_tokens\":11000}]");
-        return 0;
-    }
 }
 
 public static class TestCliMarker

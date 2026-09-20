@@ -15,8 +15,6 @@ public sealed class StatusViewModel
     public DateTimeOffset Now { get; }
 
     public string CodexHealth => DescribeHealth(Snapshot.CodexRateLimits.Health);
-    public string OpenCodeHealth => DescribeHealth(Snapshot.OpenCodeUsage.Health);
-
     public string CodexPlan => Snapshot.CodexAccount.Value?.PlanType ?? "Plan not provided";
 
     public string CodexAuthentication => Snapshot.CodexAccount.Value?.IsAuthenticated == true
@@ -24,14 +22,6 @@ public sealed class StatusViewModel
         : Snapshot.CodexAccount.Health == ProviderHealth.Healthy
             ? "Not authenticated"
             : DescribeHealth(Snapshot.CodexAccount.Health);
-
-    public string OpenCodeSummary => Snapshot.OpenCodeUsage.Value is { } usage
-        ? $"{FormatCurrency(usage.TotalCost)} estimated · {usage.Sessions:N0} sessions"
-        : "Not provided";
-
-    public string OpenCodeTokens => Snapshot.OpenCodeUsage.Value is { } openCode
-        ? $"Input / Output  {FormatTokens(openCode.InputTokens)} / {FormatTokens(openCode.OutputTokens)}"
-        : "Input / Output  Not provided";
 
     public string AwakeSummary => Snapshot.Awake.Mode switch
     {
@@ -49,11 +39,13 @@ public sealed class StatusViewModel
         var bucket = snapshot.CodexRateLimits.Value?.Buckets.FirstOrDefault();
         var codex = bucket?.Primary is { } primary ? $"{primary.RemainingPercent}%" : "--";
         var secondary = bucket?.Secondary is { } secondaryWindow ? $"{secondaryWindow.RemainingPercent}%" : "--";
-        var cost = snapshot.OpenCodeUsage.Value is { } usage ? FormatCurrency(usage.TotalCost) : "--";
+        var openCode = snapshot.OpenCodeGoQuota.Value is { } quota
+            ? $"{quota.Rolling.RemainingPercent}/{quota.Weekly.RemainingPercent}%"
+            : "--/--";
         var awake = snapshot.Awake.GetRemaining(DateTimeOffset.UtcNow) is { } remaining
             ? FormatShortDuration(remaining)
             : snapshot.Awake.IsActive ? "on" : "off";
-        var text = $"Codex {codex}/{secondary} left | OC {cost}/7d | Awake {awake}";
+        var text = $"Codex {codex}/{secondary} left | OC {openCode} left | Awake {awake}";
         return text.Length <= 63 ? text : text[..63];
     }
 
@@ -62,6 +54,7 @@ public sealed class StatusViewModel
         ProviderHealth.Healthy => "Healthy",
         ProviderHealth.Loading => "Loading",
         ProviderHealth.Stale => "Stale",
+        ProviderHealth.NotConfigured => "Not configured",
         ProviderHealth.NotInstalled => "Not installed",
         ProviderHealth.NotAuthenticated => "Not authenticated",
         ProviderHealth.Unsupported => "Unsupported",
@@ -90,8 +83,6 @@ public sealed class StatusViewModel
             _ => value.ToString("N0", CultureInfo.CurrentCulture)
         };
     }
-
-    public static string FormatCurrency(decimal value) => value.ToString("C2", CultureInfo.CurrentCulture);
 
     public static string FormatDuration(TimeSpan? duration)
     {

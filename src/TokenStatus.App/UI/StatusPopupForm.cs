@@ -10,7 +10,6 @@ public sealed class StatusPopupForm : Form
     private const int ScreenEdgeGap = 4;
 
     private readonly Action _refresh;
-    private readonly Action _openDashboard;
     private readonly Action _openSettings;
     private readonly Action _exit;
     private readonly Action<AwakeMode, TimeSpan?> _setAwake;
@@ -22,10 +21,8 @@ public sealed class StatusPopupForm : Form
     private readonly Label _lifetimeTokensLabel;
     private readonly Label _codexErrorLabel;
     private readonly ProviderHealthIndicator _openCodeHealthIndicator;
-    private readonly Label _openCodeSummaryLabel;
-    private readonly Label _openCodeTokensLabel;
-    private readonly Label _openCodeCacheLabel;
-    private readonly Label _openCodeErrorLabel;
+    private readonly VerticalStackLayout _openCodeLimitsPanel;
+    private readonly Label _openCodeQuotaErrorLabel;
     private readonly Label _awakeLabel;
 #if DEBUG
     private readonly LayoutInspectorOverlay _layoutInspector;
@@ -35,14 +32,12 @@ public sealed class StatusPopupForm : Form
     public StatusPopupForm(
         AppSnapshot initialSnapshot,
         Action refresh,
-        Action openDashboard,
         Action openSettings,
         Action<AwakeMode, TimeSpan?> setAwake,
         Action exit)
     {
         _snapshot = initialSnapshot;
         _refresh = refresh;
-        _openDashboard = openDashboard;
         _openSettings = openSettings;
         _setAwake = setAwake;
         _exit = exit;
@@ -81,7 +76,11 @@ public sealed class StatusPopupForm : Form
         };
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
-        var titleLabel = CreateLabel("TokenStatus", 15, FontStyle.Bold);
+        var titleLabel = CreateLabel(
+            AppBrand.DisplayName,
+            16,
+            FontStyle.Bold,
+            fontFamily: GetConsoleFontFamily());
         titleLabel.Tag = "accent";
         title.Controls.Add(titleLabel, 0, 0);
         var refreshButton = CreateButton("Refresh", (_, _) => _refresh());
@@ -102,19 +101,14 @@ public sealed class StatusPopupForm : Form
         codexCard.AddRow(_lifetimeTokensLabel);
         codexCard.AddRow(_codexErrorLabel);
 
-        _openCodeSummaryLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
-        _openCodeTokensLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
-        _openCodeCacheLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
-        _openCodeErrorLabel = CreateErrorLabel();
+        _openCodeLimitsPanel = CreateLimitsPanel();
+        _openCodeQuotaErrorLabel = CreateErrorLabel();
 
         var openCodeCard = new SectionCard();
         _content.AddRow(openCodeCard);
         _openCodeHealthIndicator = AddProviderSectionHeader(openCodeCard, "OpenCode", ProviderIconKind.OpenCode);
-        openCodeCard.AddRow(_openCodeSummaryLabel);
-        openCodeCard.AddRow(_openCodeTokensLabel);
-        openCodeCard.AddRow(_openCodeCacheLabel);
-        openCodeCard.AddRow(CreateButton("Open Go Usage Dashboard", (_, _) => _openDashboard(), 250), stretch: false);
-        openCodeCard.AddRow(_openCodeErrorLabel);
+        openCodeCard.AddRow(_openCodeLimitsPanel);
+        openCodeCard.AddRow(_openCodeQuotaErrorLabel);
 
         _awakeLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
         var awakeCard = new SectionCard();
@@ -151,7 +145,7 @@ public sealed class StatusPopupForm : Form
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         _updatedLabel = CreateLabel(string.Empty, 8, FontStyle.Regular);
         footer.Controls.Add(_updatedLabel, 0, 0);
-        footer.Controls.Add(CreateButton("Settings", (_, _) => _openSettings(), 105), 1, 0);
+        footer.Controls.Add(CreateButton("Settings", (_, _) => OpenSettings(), 105), 1, 0);
         footer.Controls.Add(CreateButton("Exit", (_, _) => _exit(), 60), 2, 0);
         _content.AddRow(footer);
 
@@ -202,6 +196,12 @@ public sealed class StatusPopupForm : Form
         ApplyTheme();
     }
 
+    private void OpenSettings()
+    {
+        Hide();
+        _openSettings();
+    }
+
     public void ShowPopup()
     {
         if (IsDisposed)
@@ -248,17 +248,40 @@ public sealed class StatusPopupForm : Form
         _codexErrorLabel.Visible = !string.IsNullOrWhiteSpace(_codexErrorLabel.Text);
         UpdateRateLimitRows(snapshot, view.Now);
 
-        _openCodeHealthIndicator.SetHealth(snapshot.OpenCodeUsage.Health);
-        _openCodeSummaryLabel.Text = $"Last 7 days  {view.OpenCodeSummary}";
-        _openCodeTokensLabel.Text = view.OpenCodeTokens;
-        _openCodeCacheLabel.Text = snapshot.OpenCodeUsage.Value is { } openCode
-            ? $"Cache read / write  {StatusViewModel.FormatTokens(openCode.CacheReadTokens)} / {StatusViewModel.FormatTokens(openCode.CacheWriteTokens)}"
-            : "Cache read / write  Not provided";
-        _openCodeErrorLabel.Text = snapshot.OpenCodeUsage.UserFacingError ?? string.Empty;
-        _openCodeErrorLabel.Visible = !string.IsNullOrWhiteSpace(_openCodeErrorLabel.Text);
+        _openCodeHealthIndicator.SetHealth(snapshot.OpenCodeGoQuota.Health);
+        UpdateOpenCodeQuotaRows(snapshot, view.Now);
+        _openCodeQuotaErrorLabel.Text = snapshot.OpenCodeGoQuota.UserFacingError ?? string.Empty;
+        _openCodeQuotaErrorLabel.Tag = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured ? "muted" : "error";
+        _openCodeQuotaErrorLabel.Visible = !string.IsNullOrWhiteSpace(_openCodeQuotaErrorLabel.Text);
+        WindowsTheme.Apply(_openCodeQuotaErrorLabel);
 
         _awakeLabel.Text = view.AwakeSummary;
         _updatedLabel.Text = $"Updated {FormatAge(snapshot.CapturedAt, view.Now)}";
+    }
+
+    private void UpdateOpenCodeQuotaRows(AppSnapshot snapshot, DateTimeOffset now)
+    {
+        _openCodeLimitsPanel.SuspendLayout();
+        _openCodeLimitsPanel.ClearRows();
+        if (snapshot.OpenCodeGoQuota.Value is not { } quota)
+        {
+            _openCodeLimitsPanel.AddRow(CreateLabel("Go subscription quota: Not provided", 9, FontStyle.Regular));
+        }
+        else
+        {
+            AddOpenCodeWindowRow("5-hour limit", quota.Rolling, now);
+            AddOpenCodeWindowRow("Weekly limit", quota.Weekly, now);
+            AddOpenCodeWindowRow("Monthly limit", quota.Monthly, now);
+        }
+
+        _openCodeLimitsPanel.ResumeLayout();
+    }
+
+    private void AddOpenCodeWindowRow(string title, OpenCodeQuotaWindow window, DateTimeOffset now)
+    {
+        var view = new QuotaUsageView(title, window.RemainingPercent, FormatQuotaReset(window.ResetsAt, now));
+        _openCodeLimitsPanel.AddRow(view);
+        WindowsTheme.Apply(view);
     }
 
     private void UpdateRateLimitRows(AppSnapshot snapshot, DateTimeOffset now)
@@ -400,14 +423,29 @@ public sealed class StatusPopupForm : Form
         return $"Resets {resetTime} ({relative})";
     }
 
-    private static Label CreateLabel(string text, float size, FontStyle style, Padding? margin = null)
+    private static string GetConsoleFontFamily()
+    {
+        var installedFamilies = FontFamily.Families;
+        return installedFamilies.Any(family => family.Name.Equals("Cascadia Mono", StringComparison.OrdinalIgnoreCase))
+            ? "Cascadia Mono"
+            : installedFamilies.Any(family => family.Name.Equals("Consolas", StringComparison.OrdinalIgnoreCase))
+                ? "Consolas"
+                : FontFamily.GenericMonospace.Name;
+    }
+
+    private static Label CreateLabel(
+        string text,
+        float size,
+        FontStyle style,
+        Padding? margin = null,
+        string fontFamily = "Segoe UI")
     {
         return new Label
         {
             Text = text,
             AutoSize = true,
             MaximumSize = new Size(382, 0),
-            Font = new Font("Segoe UI", size, style),
+            Font = new Font(fontFamily, size, style),
             Margin = margin ?? new Padding(0),
             Padding = new Padding(0)
         };

@@ -16,41 +16,6 @@ public static class ExecutableResolver
                 "codex.exe"));
     }
 
-    public static string? ResolveOpenCode(string? configuredPath)
-    {
-        var configured = ResolveConfigured(configuredPath);
-        if (configured is not null && !IsShellShim(configured))
-        {
-            return configured;
-        }
-
-        var pathExecutable = FindInPath("opencode.exe");
-        if (pathExecutable is not null)
-        {
-            return pathExecutable;
-        }
-
-        var npmRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "npm",
-            "node_modules",
-            "opencode-ai",
-            "bin",
-            "opencode.exe");
-        if (File.Exists(npmRoot))
-        {
-            return npmRoot;
-        }
-
-        var cmdShim = FindInPath("opencode.cmd");
-        if (cmdShim is not null && File.Exists(npmRoot))
-        {
-            return npmRoot;
-        }
-
-        return null;
-    }
-
     private static bool IsShellShim(string path)
     {
         return string.Equals(Path.GetExtension(path), ".cmd", StringComparison.OrdinalIgnoreCase) ||

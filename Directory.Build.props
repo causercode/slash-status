@@ -8,8 +8,8 @@
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
     <RepositoryUrl>https://local.invalid/TokenStatus</RepositoryUrl>
-    <Authors>TokenStatus</Authors>
-    <Company>TokenStatus</Company>
-    <Product>TokenStatus</Product>
+    <Authors>/status</Authors>
+    <Company>/status</Company>
+    <Product>/status</Product>
   </PropertyGroup>
 </Project>

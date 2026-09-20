@@ -71,7 +71,7 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
                 clientInfo = new
                 {
                     name = "token_status",
-                    title = "TokenStatus",
+                    title = "/status",
                     version = _clientVersion
                 },
                 capabilities = new

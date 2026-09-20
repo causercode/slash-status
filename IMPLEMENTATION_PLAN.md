@@ -9,8 +9,8 @@ Date: 2026-09-19
 Build a small, local-only Windows tray application named **TokenStatus** that:
 
 1. Shows authoritative Codex account quota windows and token activity by talking to the installed Codex CLI.
-2. Shows local OpenCode activity (sessions, tokens, and estimated cost) by talking to the installed OpenCode CLI.
-3. Provides a one-click link to the OpenCode Go web usage dashboard because OpenCode does not currently expose authoritative Go subscription quota through a supported CLI/API.
+2. Shows authoritative OpenCode Go rolling five-hour, weekly, and monthly limits through the official usage API.
+3. Provides a one-click link to the OpenCode Go web usage dashboard.
 4. Provides user-controlled Windows keep-awake modes with optional durations.
 5. Runs entirely as the current user, requires no administrator privileges, and can be copied between home and work Windows computers.
 
@@ -25,7 +25,7 @@ This repository is currently empty and is not yet a Git repository.
 - Click-to-open status panel.
 - Right-click tray menu.
 - Codex authentication state, plan, rate-limit windows, reset times, and token activity.
-- OpenCode local seven-day totals: sessions, estimated cost, input/output/reasoning/cache tokens.
+- OpenCode Go five-hour, weekly, and monthly used percentages and reset times.
 - OpenCode Go dashboard shortcut.
 - Manual refresh and scheduled background refresh.
 - Last-known-good data and visible stale/error states.
@@ -42,8 +42,7 @@ This repository is currently empty and is not yet a Git repository.
 - Microsoft Teams/Graph presence or “stay green.”
 - Simulated mouse movement or keyboard input.
 - Browser automation or scraping the OpenCode Go console.
-- Reading OpenCode browser cookies, API-key files, or credential tables.
-- Authoritative OpenCode Go quota until a supported API or CLI command exists.
+- Reading OpenCode browser cookies, API-key files, or credential tables. The user supplies the Go key explicitly and it is stored in Windows Credential Manager.
 - Cross-device synchronization.
 - Cloud backend or telemetry.
 - Auto-update.
@@ -66,17 +65,15 @@ Display:
 - Optional credit balance and reset-credit count when present.
 - Lifetime tokens, today's tokens, recent daily tokens, and streak information when returned.
 
-### OpenCode data is device-local
+### OpenCode quota is authoritative
 
-OpenCode Go has server-side 5-hour, weekly, and monthly subscription limits, but OpenCode 1.18.31 does not provide a supported CLI command or public API for reading the current server-side quota. `opencode stats` and the local OpenCode database describe activity recorded on the current computer only.
-
-Every OpenCode value in the app must therefore be labelled **Local activity**. Never describe it as remaining Go quota. This distinction is essential because home and work installations have independent local databases while sharing one Go subscription.
+OpenCode Go exposes account-wide rolling five-hour, weekly, and monthly usage at `GET https://opencode.ai/zen/go/v1/usage`. Authenticate with the Go API key as a bearer credential. Display the returned `percent`, `status`, and `resetsAt` fields without deriving quota from local spending.
 
 The panel must contain an **Open Go Usage Dashboard** action pointing to:
 
 `https://opencode.ai/workspace`
 
-Do not estimate a remaining percentage in the base release.
+Remaining percentage is `100 - percent`, clamped for display only. Preserve the exact server percentage in the model.
 
 ## 4. Technology Choices
 
@@ -86,7 +83,7 @@ Use:
 - Windows Forms (`net10.0-windows`).
 - `NotifyIcon` for the tray integration.
 - Built-in `System.Text.Json` for JSON.
-- Built-in `HttpUtility` is not needed; the base app should make no direct service HTTP calls.
+- Built-in `HttpClient` for the fixed OpenCode Go usage endpoint, with redirects disabled and normal TLS validation.
 - `xUnit` for automated tests.
 - P/Invoke for the Windows execution-state API.
 
@@ -122,7 +119,7 @@ src/
       AppSnapshot.cs
       ProviderHealth.cs
       CodexSnapshot.cs
-      OpenCodeSnapshot.cs
+      OpenCodeGoQuota.cs
       RateLimitBucket.cs
       RateLimitWindow.cs
       AwakeState.cs
@@ -132,7 +129,8 @@ src/
       OverallHealthCalculator.cs
     Abstractions/
       ICodexUsageClient.cs
-      IOpenCodeUsageClient.cs
+      IOpenCodeGoQuotaClient.cs
+      IOpenCodeGoCredentialStore.cs
       IAwakeController.cs
       ISettingsStore.cs
       IClock.cs
@@ -145,8 +143,8 @@ src/
       JsonLineRpcConnection.cs
       CodexJsonModels.cs
     OpenCode/
-      OpenCodeUsageClient.cs
-      OpenCodeJsonModels.cs
+      OpenCodeGoQuotaClient.cs
+      WindowsOpenCodeGoCredentialStore.cs
     Awake/
       WindowsAwakeController.cs
       ExecutionStateNative.cs
@@ -212,9 +210,9 @@ public interface ICodexUsageClient : IAsyncDisposable
     Task<CodexTokenUsage> GetTokenUsageAsync(CancellationToken cancellationToken);
 }
 
-public interface IOpenCodeUsageClient
+public interface IOpenCodeGoQuotaClient
 {
-    Task<OpenCodeLocalUsage> GetSevenDayUsageAsync(CancellationToken cancellationToken);
+    Task<OpenCodeGoQuota> GetQuotaAsync(CancellationToken cancellationToken);
 }
 
 public interface IAwakeController : IDisposable
@@ -333,72 +331,21 @@ Keep rate-limit and token-activity last-success timestamps separate so one faili
 
 ## 8. OpenCode Integration
 
-### 8.1 Executable resolution
+### 8.1 OpenCode Go quota API
 
-Resolve a native executable rather than relying on a PowerShell shim:
+Send `GET https://opencode.ai/zen/go/v1/usage` with `Authorization: Bearer <key>`. The key must be supplied explicitly in Settings and stored as a per-user generic credential named `TokenStatus:OpenCodeGoApiKey` in Windows Credential Manager. Never place it in JSON settings, logs, URLs, or command-line arguments.
 
-1. User-configured absolute path.
-2. `opencode.exe` found in `PATH`.
-3. `%APPDATA%\npm\node_modules\opencode-ai\bin\opencode.exe`.
+Accept at most 64 KiB of JSON with bounded depth. Treat `401` as invalid/expired credentials, `403` as no Go entitlement, and `429` as a transient stale state. Disable redirects so the bearer credential cannot be forwarded to another host.
 
-If only an npm `.cmd` shim is found, inspect its sibling standard npm package location and prefer the native `opencode.exe`. Do not invoke a `.ps1` shim or alter PowerShell execution policy.
-
-### 8.2 Version/capability probe
-
-Run at startup with a five-second timeout:
-
-```text
-opencode --version
-```
-
-Do not hardcode acceptance to version 1.18.31. Probe the required database command and schema. A newer compatible CLI should continue to work.
-
-### 8.3 Local usage query
-
-Run through the CLI, not by opening the SQLite file directly:
-
-```text
-opencode db <QUERY> --format json
-```
-
-Pass `<QUERY>` as one `ArgumentList` element. The SQL must be an application-owned constant with no user-controlled interpolation.
-
-Use this seven-day query:
-
-```sql
-SELECT
-  COUNT(*) AS sessions,
-  ROUND(COALESCE(SUM(cost), 0), 6) AS total_cost,
-  COALESCE(SUM(tokens_input), 0) AS input_tokens,
-  COALESCE(SUM(tokens_output), 0) AS output_tokens,
-  COALESCE(SUM(tokens_reasoning), 0) AS reasoning_tokens,
-  COALESCE(SUM(tokens_cache_read), 0) AS cache_read_tokens,
-  COALESCE(SUM(tokens_cache_write), 0) AS cache_write_tokens
-FROM session
-WHERE time_created >=
-  (CAST(strftime('%s', 'now', '-7 days') AS INTEGER) * 1000)
-```
-
-Expected output is a JSON array containing one row. Validate every field and accept integer or floating-point JSON numbers where appropriate.
-
-If the `session` schema changes or the command becomes unavailable:
-
-- Preserve the last successful snapshot.
-- Mark it stale.
-- Show “OpenCode version not currently supported.”
-- Log only the exit code and a redacted/capped error excerpt.
-
-Do not silently fall back to parsing the human-readable box-drawing output of `opencode stats`; it is too brittle for the base implementation.
-
-### 8.4 OpenCode refresh schedule
+### 8.2 OpenCode refresh schedule
 
 - At startup.
 - Every 2 minutes.
 - On manual refresh.
-- Process timeout: 15 seconds.
-- No overlapping OpenCode child processes.
+- HTTP timeout: 10 seconds.
+- No overlapping OpenCode quota requests.
 
-### 8.5 Go dashboard action
+### 8.3 Go dashboard action
 
 Open the hardcoded dashboard URL through the default browser using shell execution. Do not append keys, account IDs, or query parameters.
 
@@ -506,12 +453,10 @@ Codex                                      Healthy
   Today               5.9M tokens
   Lifetime            2.4B tokens
 
-OpenCode Go — Local activity               Healthy
-  Last 7 days         $2.91 estimated
-  Sessions            8
-  Input / Output      129K / 78K
-  Cache read          8.9M
-  [Open Go Usage Dashboard]
+OpenCode                                    Healthy
+  5-hour              23% used          resets 4:24 PM
+  Weekly              41% used          resets Friday
+  Monthly             19% used          resets Oct 5
 
 Keep awake                                  Off
   [System] [System + display] [Duration]
@@ -521,7 +466,6 @@ Updated 35 seconds ago             Settings   Exit
 
 UI rules:
 
-- Explicitly include “Local activity” and “estimated” in the OpenCode section.
 - Show both used and remaining Codex percentages in accessible text/tooltips if progress bars are used.
 - Display reset timestamps in local time and provide relative text.
 - Null/missing fields display as “Not provided,” not zero.
@@ -549,7 +493,7 @@ Include:
 Base settings:
 
 - Codex executable path with Auto-detect/Test actions.
-- OpenCode executable path with Auto-detect/Test actions.
+- Masked OpenCode Go API-key field with Test and Clear actions. Never reveal a saved key back into the field.
 - Refresh intervals with safe minimums: 30 seconds for rate limits/local stats and 5 minutes for token-history activity.
 - Start with Windows.
 - Open log folder.
@@ -597,7 +541,6 @@ Suggested settings schema:
 {
   "schemaVersion": 1,
   "codexExecutablePath": null,
-  "openCodeExecutablePath": null,
   "codexRateLimitRefreshSeconds": 120,
   "codexUsageRefreshSeconds": 600,
   "openCodeRefreshSeconds": 120,
@@ -632,6 +575,8 @@ Do not write to HKLM, install a service, create an elevated scheduled task, or r
 - Run only as the current user.
 - Never request administrator privileges in the application manifest.
 - Never read Codex or OpenCode credential files directly.
+- Store the explicitly supplied OpenCode Go key only in Windows Credential Manager for the current user.
+- Send the key only to the hardcoded `https://opencode.ai/zen/go/v1/usage` endpoint, with redirects disabled and default TLS certificate validation enabled.
 - Never query OpenCode `account`, `credential`, or authentication-related tables.
 - Use only a hardcoded read-only aggregate query against `session`.
 - Do not accept arbitrary SQL from settings or UI.
@@ -739,7 +684,7 @@ Create a small `TokenStatus.TestCli` console project that can emulate:
 - Notifications between responses.
 - Malformed JSON.
 - Early process exit.
-- OpenCode JSON aggregate success/failure.
+- OpenCode Go usage JSON success/failure.
 
 Use it for deterministic infrastructure integration tests instead of requiring real accounts in CI.
 
@@ -751,7 +696,7 @@ On Windows 10/11:
 2. Tray icon appears while providers are still loading.
 3. Left click opens a correctly positioned panel.
 4. Codex signed-in state and quota values match `/status` or `/usage` closely.
-5. OpenCode seven-day totals match `opencode stats --days 7` within formatting/rounding differences.
+5. OpenCode Go quota values match the web dashboard.
 6. Disconnect or rename each CLI and verify clear degraded states.
 7. Expire/interrupt authentication and verify no secrets appear in logs.
 8. Enable each awake mode and confirm Windows does not automatically sleep as applicable.
@@ -782,10 +727,10 @@ Exit criteria: the installed Codex CLI produces live quota and activity data wit
 
 ### Milestone 3: OpenCode provider
 
-- Implement native executable resolution, version probe, database aggregate command, parser, and tests.
-- Add the local-only labels and Go dashboard action.
+- Implement the official Go usage client, Windows Credential Manager storage, parser, and tests.
+- Add quota windows and the Go dashboard action.
 
-Exit criteria: local seven-day totals match the installed CLI and no claim of account-wide quota is made.
+Exit criteria: five-hour, weekly, and monthly values match the account-wide dashboard.
 
 ### Milestone 4: Keep awake
 
@@ -809,7 +754,7 @@ The base application is done when:
 - It runs as a single tray application with no console window and no elevation.
 - It can be installed by extracting a ZIP into a user-writable folder.
 - Codex quotas and token activity are read from the supported app-server protocol.
-- OpenCode local activity is displayed accurately and unmistakably labelled local/estimated.
+- OpenCode Go quota displays authoritative account-wide five-hour, weekly, and monthly values when a key is configured.
 - The OpenCode Go dashboard opens with one click.
 - Provider failures never erase good prior data or freeze the UI.
 - Keep-awake modes work, expire correctly, and always clear on exit.
@@ -822,7 +767,7 @@ The base application is done when:
 
 - Codex app-server protocol: <https://developers.openai.com/codex/app-server>
 - Codex developer commands and `/usage`: <https://developers.openai.com/codex/developer-commands?surface=cli>
-- OpenCode CLI (`stats` and `db`): <https://dev.opencode.ai/docs/cli/>
 - OpenCode Go limits and console: <https://dev.opencode.ai/docs/go/>
+- OpenCode Go usage endpoint implementation: <https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts>
+- Windows Credential Manager `CredWrite`: <https://learn.microsoft.com/windows/win32/api/wincred/nf-wincred-credwritew>
 - Windows `SetThreadExecutionState`: <https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate>
-

@@ -6,7 +6,7 @@ namespace TokenStatus.Core.Services;
 public sealed record RefreshIntervals(
     TimeSpan CodexRateLimits,
     TimeSpan CodexTokenUsage,
-    TimeSpan OpenCodeUsage)
+    TimeSpan OpenCodeQuota)
 {
     public static RefreshIntervals FromSettings(AppSettings settings) => new(
         TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumProviderRefreshSeconds, settings.CodexRateLimitRefreshSeconds)),
@@ -17,7 +17,7 @@ public sealed record RefreshIntervals(
 public sealed class RefreshCoordinator : IAsyncDisposable
 {
     private readonly ICodexUsageClient _codex;
-    private readonly IOpenCodeUsageClient _openCode;
+    private readonly IOpenCodeGoQuotaClient _openCodeGo;
     private readonly IAwakeController _awake;
     private readonly SnapshotStore _snapshots;
     private readonly IClock _clock;
@@ -26,20 +26,20 @@ public sealed class RefreshCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _accountGate = new(1, 1);
     private readonly SemaphoreSlim _rateLimitsGate = new(1, 1);
     private readonly SemaphoreSlim _tokenUsageGate = new(1, 1);
-    private readonly SemaphoreSlim _openCodeGate = new(1, 1);
+    private readonly SemaphoreSlim _openCodeGoGate = new(1, 1);
     private readonly object _coalescingGate = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly List<Task> _loops = [];
     private readonly TaskSlot _accountRefresh = new();
     private readonly TaskSlot _rateLimitsRefresh = new();
     private readonly TaskSlot _tokenUsageRefresh = new();
-    private readonly TaskSlot _openCodeRefresh = new();
+    private readonly TaskSlot _openCodeGoRefresh = new();
     private int _started;
     private int _disposed;
 
     public RefreshCoordinator(
         ICodexUsageClient codex,
-        IOpenCodeUsageClient openCode,
+        IOpenCodeGoQuotaClient openCodeGo,
         IAwakeController awake,
         SnapshotStore snapshots,
         IClock clock,
@@ -47,7 +47,7 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         Action<string, Exception?>? diagnostic = null)
     {
         _codex = codex;
-        _openCode = openCode;
+        _openCodeGo = openCodeGo;
         _awake = awake;
         _snapshots = snapshots;
         _clock = clock;
@@ -67,7 +67,7 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         _loops.Add(Task.Run(() => RunLoopAsync(RefreshAccountAsync, _intervals.CodexRateLimits, MarkAccountStaleAsync)));
         _loops.Add(Task.Run(() => RunLoopAsync(RefreshRateLimitsAsync, _intervals.CodexRateLimits, MarkRateLimitsStaleAsync)));
         _loops.Add(Task.Run(() => RunLoopAsync(RefreshTokenUsageAsync, _intervals.CodexTokenUsage, MarkTokenUsageStaleAsync)));
-        _loops.Add(Task.Run(() => RunLoopAsync(RefreshOpenCodeAsync, _intervals.OpenCodeUsage, MarkOpenCodeStaleAsync)));
+        _loops.Add(Task.Run(() => RunLoopAsync(RefreshOpenCodeGoAsync, _intervals.OpenCodeQuota, MarkOpenCodeGoStaleAsync)));
     }
 
     public async Task RefreshNowAsync(CancellationToken cancellationToken = default)
@@ -77,7 +77,7 @@ public sealed class RefreshCoordinator : IAsyncDisposable
             RefreshAccountAsync(cancellationToken),
             RefreshRateLimitsAsync(cancellationToken),
             RefreshTokenUsageAsync(cancellationToken),
-            RefreshOpenCodeAsync(cancellationToken)).ConfigureAwait(false);
+            RefreshOpenCodeGoAsync(cancellationToken)).ConfigureAwait(false);
     }
 
     private async Task RunLoopAsync(
@@ -224,22 +224,22 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    private Task RefreshOpenCodeAsync(CancellationToken cancellationToken) => Coalesce(
-        _openCodeRefresh,
-        () => RefreshOpenCodeCoreAsync(cancellationToken));
+    private Task RefreshOpenCodeGoAsync(CancellationToken cancellationToken) => Coalesce(
+        _openCodeGoRefresh,
+        () => RefreshOpenCodeGoCoreAsync(cancellationToken));
 
-    private async Task RefreshOpenCodeCoreAsync(CancellationToken cancellationToken)
+    private async Task RefreshOpenCodeGoCoreAsync(CancellationToken cancellationToken)
     {
-        await RunExclusiveAsync(_openCodeGate, async () =>
+        await RunExclusiveAsync(_openCodeGoGate, async () =>
         {
             var attempt = _clock.UtcNow;
             try
             {
-                var value = await _openCode.GetSevenDayUsageAsync(cancellationToken).ConfigureAwait(false);
+                var value = await _openCodeGo.GetQuotaAsync(cancellationToken).ConfigureAwait(false);
                 _snapshots.Update(snapshot => snapshot with
                 {
                     CapturedAt = _clock.UtcNow,
-                    OpenCodeUsage = new ProviderResult<OpenCodeLocalUsage>(
+                    OpenCodeGoQuota = new ProviderResult<OpenCodeGoQuota>(
                         ProviderHealth.Healthy, value, attempt, _clock.UtcNow, null, null)
                 });
             }
@@ -248,10 +248,10 @@ public sealed class RefreshCoordinator : IAsyncDisposable
                 throw;
             }
             catch (Exception exception) when (RecordFailure(
-                "opencode_usage", exception, attempt, _snapshots.Current.OpenCodeUsage, result => _snapshots.Update(current => current with
+                "opencode_go_quota", exception, attempt, _snapshots.Current.OpenCodeGoQuota, result => _snapshots.Update(current => current with
                 {
                     CapturedAt = _clock.UtcNow,
-                    OpenCodeUsage = result
+                    OpenCodeGoQuota = result
                 })))
             {
             }
@@ -270,7 +270,10 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         var message = failure?.UserFacingMessage ?? "The provider could not be refreshed.";
         var code = failure?.DiagnosticCode ?? "refresh_failed";
         update(prior.WithFailure(health, attempt, message, code));
-        _diagnostic?.Invoke(operation + ":" + code, exception);
+        if (health != ProviderHealth.NotConfigured)
+        {
+            _diagnostic?.Invoke(operation + ":" + code, exception);
+        }
         return true;
     }
 
@@ -289,10 +292,10 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         _intervals.CodexTokenUsage,
         (snapshot, result) => snapshot with { CapturedAt = _clock.UtcNow, CodexTokenUsage = result });
 
-    private Task MarkOpenCodeStaleAsync() => MarkStaleAsync(
-        snapshot => snapshot.OpenCodeUsage,
-        _intervals.OpenCodeUsage,
-        (snapshot, result) => snapshot with { CapturedAt = _clock.UtcNow, OpenCodeUsage = result });
+    private Task MarkOpenCodeGoStaleAsync() => MarkStaleAsync(
+        snapshot => snapshot.OpenCodeGoQuota,
+        _intervals.OpenCodeQuota,
+        (snapshot, result) => snapshot with { CapturedAt = _clock.UtcNow, OpenCodeGoQuota = result });
 
     private Task MarkStaleAsync<T>(
         Func<AppSnapshot, ProviderResult<T>> select,
@@ -404,12 +407,12 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         _accountGate.Dispose();
         _rateLimitsGate.Dispose();
         _tokenUsageGate.Dispose();
-        _openCodeGate.Dispose();
+        _openCodeGoGate.Dispose();
         _shutdown.Dispose();
         await _codex.DisposeAsync().ConfigureAwait(false);
-        if (_openCode is IDisposable disposableOpenCode)
+        if (_openCodeGo is IDisposable disposableOpenCodeGo)
         {
-            disposableOpenCode.Dispose();
+            disposableOpenCodeGo.Dispose();
         }
     }
 }
