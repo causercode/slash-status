@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>TokenStatus</AssemblyName>
+    <RootNamespace>TokenStatus.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishTrimmed>false</PublishTrimmed>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TokenStatus.Core\TokenStatus.Core.csproj" />
+    <ProjectReference Include="..\TokenStatus.Infrastructure\TokenStatus.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="UI\Assets\codex.png" LogicalName="TokenStatus.App.UI.Assets.codex.png" />
+    <EmbeddedResource Include="UI\Assets\opencode.png" LogicalName="TokenStatus.App.UI.Assets.opencode.png" />
+  </ItemGroup>
+</Project>

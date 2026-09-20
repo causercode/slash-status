@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <RepositoryUrl>https://local.invalid/TokenStatus</RepositoryUrl>
+    <Authors>TokenStatus</Authors>
+    <Company>TokenStatus</Company>
+    <Product>TokenStatus</Product>
+  </PropertyGroup>
+</Project>

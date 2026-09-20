@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TokenStatus: build",
+      "type": "shell",
+      "command": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
+      "args": ["build", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug"],
+      "problemMatcher": "$msCompile",
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "TokenStatus: test",
+      "type": "shell",
+      "command": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
+      "args": ["test", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug", "--no-restore"],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "TokenStatus: publish win-x64",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}\\scripts\\Publish.ps1"],
+      "problemMatcher": []
+    }
+  ]
+}
