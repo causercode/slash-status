@@ -44,8 +44,7 @@ function Resolve-DotNetPath {
     param([string]$RequestedPath)
 
     if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
-        $command = Get-Command dotnet -CommandType Application -ErrorAction Stop
-        return (Resolve-Path -LiteralPath $command.Source).Path
+        return (& (Join-Path $PSScriptRoot "Resolve-DotNet.ps1"))
     }
 
     $candidate = $RequestedPath
@@ -161,12 +160,12 @@ if ($AllowDeveloperOverride -and ($isCi -or $RequireSigning -or ![string]::IsNul
     throw "-AllowDeveloperOverride is only available for local unsigned development publishes."
 }
 
-$trackedChanges = git status --porcelain --untracked-files=no
+$worktreeChanges = git status --porcelain --untracked-files=normal
 if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect the Git worktree."
 }
-if (($trackedChanges | Out-String).Trim().Length -gt 0 -and !$AllowDeveloperOverride) {
-    throw "The worktree contains tracked changes. Release publishing requires a clean source tree."
+if (($worktreeChanges | Out-String).Trim().Length -gt 0 -and !$AllowDeveloperOverride) {
+    throw "The worktree contains tracked or untracked changes. Release publishing requires a clean source tree."
 }
 
 $head = Get-GitText @("rev-parse", "HEAD")

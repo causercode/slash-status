@@ -4,16 +4,16 @@
     {
       "label": "TokenStatus: build",
       "type": "shell",
-      "command": "dotnet",
-      "args": ["build", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}\\scripts\\Invoke-DotNet.ps1", "build", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug"],
       "problemMatcher": "$msCompile",
       "group": { "kind": "build", "isDefault": true }
     },
     {
       "label": "TokenStatus: test",
       "type": "shell",
-      "command": "dotnet",
-      "args": ["test", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug", "--no-restore"],
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}\\scripts\\Invoke-DotNet.ps1", "test", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug", "--no-restore"],
       "problemMatcher": "$msCompile"
     },
     {
