@@ -29,7 +29,10 @@ public sealed class CurrentUserStartupManager : IStartupManager
         else
         {
             var existing = key.GetValue(ValueName) as string;
-            if (existing is not null && IsTokenStatusCommand(existing))
+            if (string.Equals(
+                existing,
+                QuotePath(executablePath),
+                StringComparison.OrdinalIgnoreCase))
             {
                 key.DeleteValue(ValueName, throwOnMissingValue: false);
             }
@@ -40,11 +43,5 @@ public sealed class CurrentUserStartupManager : IStartupManager
     {
         var fullPath = Path.GetFullPath(executablePath).Replace("\"", "");
         return "\"" + fullPath + "\"";
-    }
-
-    private static bool IsTokenStatusCommand(string value)
-    {
-        var trimmed = value.Trim();
-        return trimmed.StartsWith('"') && trimmed.EndsWith('"') && trimmed.Length > 2;
     }
 }

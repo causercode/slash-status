@@ -52,9 +52,18 @@ else {
     if (![string]::IsNullOrWhiteSpace($env:DOTNET_ROOT)) {
         $candidates.Add((Join-Path $env:DOTNET_ROOT "dotnet.exe"))
     }
-    $candidates.Add((Join-Path $env:USERPROFILE ".dotnet-tokenstatus-sdk\dotnet.exe"))
     foreach ($command in @(Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue)) {
         $candidates.Add($command.Source)
+    }
+
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    if (![string]::IsNullOrWhiteSpace($programFiles)) {
+        $candidates.Add((Join-Path $programFiles "dotnet\dotnet.exe"))
+    }
+
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    if (![string]::IsNullOrWhiteSpace($programFilesX86)) {
+        $candidates.Add((Join-Path $programFilesX86 "dotnet\dotnet.exe"))
     }
 }
 

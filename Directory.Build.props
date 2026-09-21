@@ -7,9 +7,13 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
-    <Authors>/status</Authors>
-    <Company>/status</Company>
+    <Authors>/status contributors</Authors>
     <Product>/status</Product>
+    <Copyright>Copyright © 2026 Daniel Causer and contributors</Copyright>
+    <RepositoryUrl>https://github.com/causercode/slash-status</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/causercode/slash-status</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

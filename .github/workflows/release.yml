@@ -43,6 +43,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - win-x64
+          - win-arm64
     permissions:
       contents: read
     steps:
@@ -52,14 +58,25 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.401
-      - name: Import trusted signing certificate
+      - name: Import signing certificate when configured
         shell: pwsh
         env:
           SIGNING_CERTIFICATE_BASE64: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_BASE64 }}
           SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_THUMBPRINT: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_THUMBPRINT }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64) -or [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) {
-              throw "Official releases require signing certificate secrets."
+          $values = @(
+              $env:SIGNING_CERTIFICATE_BASE64,
+              $env:SIGNING_CERTIFICATE_PASSWORD,
+              $env:SIGNING_THUMBPRINT
+          )
+          $configured = @($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($configured -eq 0) {
+              Write-Warning 'Signing secrets are not configured. The release artifacts will be marked UNSIGNED.'
+              exit 0
+          }
+          if ($configured -ne $values.Count) {
+              throw 'Signing is only enabled when all three certificate secrets are configured.'
           }
           $certificatePath = Join-Path $env:RUNNER_TEMP "tokenstatus-signing.pfx"
           [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
@@ -75,18 +92,54 @@ jobs:
         run: |
           $version = $env:RELEASE_VERSION -replace '^v', ''
           $timestamp = if ([string]::IsNullOrWhiteSpace($env:TIMESTAMP_SERVER)) { 'http://timestamp.digicert.com' } else { $env:TIMESTAMP_SERVER }
-          .\scripts\Publish.ps1 `
-            -Version $version `
-            -ReleaseTag $env:RELEASE_VERSION `
-            -ReleaseCommit $env:GITHUB_SHA `
-            -DotNetPath ((Get-Command dotnet -CommandType Application).Source) `
-            -RequireSigning `
-            -CertificateThumbprint $env:SIGNING_THUMBPRINT `
-            -TimestampServer $timestamp
+          $publishArguments = @{
+              Version = $version
+              ReleaseTag = $env:RELEASE_VERSION
+              ReleaseCommit = $env:GITHUB_SHA
+              RuntimeIdentifier = '${{ matrix.runtime }}'
+              DotNetPath = (Get-Command dotnet -CommandType Application).Source
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:SIGNING_THUMBPRINT)) {
+              $publishArguments['RequireSigning'] = $true
+              $publishArguments['CertificateThumbprint'] = $env:SIGNING_THUMBPRINT
+              $publishArguments['TimestampServer'] = $timestamp
+          }
+          .\scripts\Publish.ps1 @publishArguments
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TokenStatus-${{ github.ref_name }}
+          name: TokenStatus-${{ github.ref_name }}-${{ matrix.runtime }}
           path: |
             artifacts/*.zip
             artifacts/*.manifest.json
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TokenStatus-${{ github.ref_name }}-*
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $files = @(Get-ChildItem -LiteralPath artifacts -File | Select-Object -ExpandProperty FullName)
+          if ($files.Count -eq 0) {
+              throw 'No release files were downloaded.'
+          }
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+              gh release upload $env:RELEASE_TAG @files --clobber
+          }
+          else {
+              gh release create $env:RELEASE_TAG @files --verify-tag --generate-notes --title $env:RELEASE_TAG
+          }

@@ -4,6 +4,8 @@ param(
     [string]$DotNetPath,
     [string]$ReleaseCommit,
     [string]$ReleaseTag,
+    [ValidateSet("win-x64", "win-arm64")]
+    [string]$RuntimeIdentifier = "win-x64",
     [switch]$AllowDeveloperOverride,
     [switch]$RequireSigning,
     [string]$CertificateThumbprint,
@@ -208,10 +210,10 @@ if ($auditOutput -match "has the following vulnerable packages" -or
 }
 
 $artifactDirectory = Join-Path $repoRoot "artifacts"
-$stagingDirectory = Join-Path $artifactDirectory "staging\TokenStatus-win-x64-$Version"
+$stagingDirectory = Join-Path $artifactDirectory "staging\TokenStatus-$RuntimeIdentifier-$Version"
 $unsignedSuffix = if ($RequireSigning -or ![string]::IsNullOrWhiteSpace($CertificateThumbprint)) { "" } else { "-UNSIGNED" }
-$zipName = "TokenStatus-win-x64-$Version$unsignedSuffix.zip"
-$manifestName = "TokenStatus-win-x64-$Version$unsignedSuffix.manifest.json"
+$zipName = "TokenStatus-$RuntimeIdentifier-$Version$unsignedSuffix.zip"
+$manifestName = "TokenStatus-$RuntimeIdentifier-$Version$unsignedSuffix.manifest.json"
 $zipPath = Join-Path $artifactDirectory $zipName
 $manifestPath = Join-Path $artifactDirectory $manifestName
 
@@ -230,7 +232,7 @@ $publishArguments = @(
     "publish",
     (Join-Path $repoRoot "src\TokenStatus.App\TokenStatus.App.csproj"),
     "--configuration", "Release",
-    "--runtime", "win-x64",
+    "--runtime", $RuntimeIdentifier,
     "--self-contained", "true",
     "-p:PublishSingleFile=true",
     "-p:PublishTrimmed=false",
@@ -268,7 +270,7 @@ $internalManifest = [ordered]@{
     releaseKind = $releaseKind
     version = $Version
     commit = $head
-    rid = "win-x64"
+    rid = $RuntimeIdentifier
     sdkVersion = $sdkVersion
     buildTimeUtc = $buildTimeUtc
     signatureStatus = $signatureStatus
