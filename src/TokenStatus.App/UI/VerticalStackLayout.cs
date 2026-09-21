@@ -24,8 +24,13 @@ internal class VerticalStackLayout : TableLayoutPanel
 
     public void ClearRows()
     {
+        var removed = Controls.Cast<Control>().ToArray();
         Controls.Clear();
         RowStyles.Clear();
         RowCount = 0;
+        foreach (var control in removed)
+        {
+            control.Dispose();
+        }
     }
 }

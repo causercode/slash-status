@@ -10,7 +10,9 @@ public enum AwakeMode
 public sealed record AwakeState(
     AwakeMode Mode,
     DateTimeOffset? StartedAt,
-    DateTimeOffset? ExpiresAt)
+    DateTimeOffset? ExpiresAt,
+    string? UserFacingError = null,
+    string? DiagnosticCode = null)
 {
     public static AwakeState Off => new(AwakeMode.Off, null, null);
 

@@ -21,12 +21,14 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
     private readonly Mutex _instanceMutex;
     private readonly SynchronizationContext _uiContext;
     private readonly IRedactedLog _log;
-    private readonly JsonSettingsStore _settingsStore;
-    private readonly WindowsOpenCodeGoCredentialStore _openCodeGoCredentials;
+    private readonly string _logDirectory;
+    private readonly ISettingsStore _settingsStore;
+    private readonly IOpenCodeGoCredentialStore _openCodeGoCredentials;
+    private readonly StartupSettingsCoordinator _startupCoordinator;
     private readonly SnapshotStore _snapshots;
     private readonly QuotaNotificationTracker _quotaNotifications = new();
     private readonly WindowsAwakeController _awake;
-    private readonly CurrentUserStartupManager _startupManager = new();
+    private readonly IStartupManager _startupManager;
     private readonly NotifyIcon _tray;
     private readonly ContextMenuStrip _trayMenu;
     private readonly ToolStripMenuItem _startWithWindowsMenuItem;
@@ -35,16 +37,28 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
     private ICodexUsageClient? _codexClient;
     private IOpenCodeGoQuotaClient? _openCodeGoClient;
     private AppSettings _settings = new();
+    private TrayHealth _lastTrayHealth = TrayHealth.Gray;
     private Icon? _trayIcon;
     private int _shuttingDown;
 
-    public TokenStatusApplicationContext(Mutex instanceMutex)
+    public TokenStatusApplicationContext(
+        Mutex instanceMutex,
+        ISettingsStore? settingsStore = null,
+        IOpenCodeGoCredentialStore? openCodeGoCredentials = null,
+        IStartupManager? startupManager = null,
+        IRedactedLog? log = null)
     {
         _instanceMutex = instanceMutex;
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-        _log = new RedactingFileLog();
-        _settingsStore = new JsonSettingsStore(_log);
-        _openCodeGoCredentials = new WindowsOpenCodeGoCredentialStore();
+        _log = log ?? RedactedLogFactory.Create();
+        _logDirectory = _log is RedactingFileLog fileLog ? fileLog.LogDirectory : string.Empty;
+        _settingsStore = settingsStore ?? new JsonSettingsStore(_log);
+        _openCodeGoCredentials = openCodeGoCredentials ?? new WindowsOpenCodeGoCredentialStore();
+        _startupManager = startupManager ?? new CurrentUserStartupManager();
+        _startupCoordinator = new StartupSettingsCoordinator(
+            _startupManager,
+            _settingsStore,
+            Application.ExecutablePath);
         _snapshots = new SnapshotStore(AppSnapshot.Initial(DateTimeOffset.UtcNow));
         _awake = new WindowsAwakeController();
         SystemEvents.PowerModeChanged += PowerModeChanged;
@@ -151,7 +165,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         try
         {
             _settings = await _settingsStore.LoadAsync(CancellationToken.None).ConfigureAwait(true);
-            UpdateStartupMenuState();
+            ReconcileStartupState();
             _awake.Start(AwakeMode.Off, null);
             await RecreateProvidersAsync().ConfigureAwait(true);
         }
@@ -205,13 +219,21 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         }
 
         var health = OverallHealthCalculator.Calculate(snapshot);
-        var nextIcon = TrayIconRenderer.Create(health);
-        var previousIcon = _tray.Icon;
-        _tray.Icon = nextIcon;
-        previousIcon?.Dispose();
-        _trayIcon = nextIcon;
+        if (health != _lastTrayHealth)
+        {
+            var nextIcon = TrayIconRenderer.Create(health);
+            var previousIcon = _tray.Icon;
+            _tray.Icon = nextIcon;
+            previousIcon?.Dispose();
+            _trayIcon = nextIcon;
+            _lastTrayHealth = health;
+        }
+
         _tray.Text = StatusViewModel.BuildTooltip(snapshot);
-        _popup?.UpdateSnapshot(snapshot);
+        if (_popup is { IsDisposed: false, Visible: true })
+        {
+            _popup.UpdateSnapshot(snapshot);
+        }
         ShowQuotaNotifications(_quotaNotifications.Evaluate(snapshot));
     }
 
@@ -319,6 +341,16 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
 
     private void ShowSettings()
     {
+        if (!ReconcileStartupState())
+        {
+            MessageBox.Show(
+                "The current-user startup setting could not be read. Settings were not opened.",
+                $"Could not open {AppBrand.DisplayName} settings",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         try
         {
             using var form = new SettingsForm(
@@ -326,7 +358,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
                 _openCodeGoCredentials.IsConfigured(),
                 TestOpenCodeGoApiKeyAsync,
                 SaveSettingsAsync,
-                _log is RedactingFileLog fileLog ? fileLog.LogDirectory : string.Empty);
+                _logDirectory);
             form.ShowDialog();
         }
         catch (Exception exception)
@@ -350,14 +382,42 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
 
     private async Task SaveSettingsAsync(AppSettings settings, string? openCodeGoApiKey, bool deleteOpenCodeGoApiKey)
     {
-        var credentialChanged = deleteOpenCodeGoApiKey || !string.IsNullOrWhiteSpace(openCodeGoApiKey);
-        if (deleteOpenCodeGoApiKey)
+        var previousSettings = _settings;
+        var previousStartupState = ReadEffectiveStartupStateOrThrow();
+        var normalized = settings.Normalize();
+        if (normalized.StartWithWindows == previousSettings.StartWithWindows)
         {
-            _openCodeGoCredentials.DeleteApiKey();
+            // An unrelated save must not overwrite a registry change made while
+            // the Settings window was open. Only an explicit checkbox change may
+            // request a different effective startup state.
+            normalized = normalized with { StartWithWindows = previousStartupState };
         }
-        else if (!string.IsNullOrWhiteSpace(openCodeGoApiKey))
+
+        var credentialChanged = deleteOpenCodeGoApiKey || !string.IsNullOrWhiteSpace(openCodeGoApiKey);
+        try
         {
-            _openCodeGoCredentials.SaveApiKey(openCodeGoApiKey);
+            await CommitSettingsAndStartupAsync(normalized, previousStartupState).ConfigureAwait(true);
+
+            if (deleteOpenCodeGoApiKey)
+            {
+                _openCodeGoCredentials.DeleteApiKey();
+            }
+            else if (!string.IsNullOrWhiteSpace(openCodeGoApiKey))
+            {
+                _openCodeGoCredentials.SaveApiKey(openCodeGoApiKey);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (ReferenceEquals(_settings, previousSettings) &&
+                !ReferenceEquals(normalized, previousSettings))
+            {
+                await TryRestoreSettingsAndStartupAsync(previousSettings, previousStartupState, exception)
+                    .ConfigureAwait(true);
+            }
+
+            _log.Error("settings", "save", "settings_save_failed", exception);
+            throw;
         }
 
         if (credentialChanged)
@@ -370,18 +430,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             });
         }
 
-        await _settingsStore.SaveAsync(settings, CancellationToken.None).ConfigureAwait(true);
-        try
-        {
-            _startupManager.SetEnabled(Application.ExecutablePath, settings.StartWithWindows);
-        }
-        catch (Exception exception)
-        {
-            _log.Error("startup", "registry", "startup_registry_failed", exception);
-            throw;
-        }
-
-        _settings = settings;
+        _settings = normalized;
         UpdateStartupMenuState();
         await RecreateProvidersAsync().ConfigureAwait(true);
     }
@@ -389,29 +438,86 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
     private async Task ToggleStartupAsync()
     {
         var enabled = _startWithWindowsMenuItem.Checked;
+        var previousSettings = _settings;
         try
         {
-            _startupManager.SetEnabled(Application.ExecutablePath, enabled);
-            _settings = _settings with { StartWithWindows = enabled };
-            await _settingsStore.SaveAsync(_settings, CancellationToken.None).ConfigureAwait(true);
+            var previousStartupState = ReadEffectiveStartupStateOrThrow();
+            var nextSettings = _settings with { StartWithWindows = enabled };
+            await CommitSettingsAndStartupAsync(nextSettings, previousStartupState).ConfigureAwait(true);
+            _settings = nextSettings;
+            UpdateStartupMenuState();
         }
         catch (Exception exception)
         {
             _log.Error("startup", "toggle", "startup_toggle_failed", exception);
-            _startWithWindowsMenuItem.Checked = !enabled;
+            _settings = previousSettings;
+            ReconcileStartupState();
+        }
+    }
+
+    private bool ReconcileStartupState()
+    {
+        try
+        {
+            var effective = _startupCoordinator.GetEffectiveState();
+            _settings = _settings with { StartWithWindows = effective };
+            _startWithWindowsMenuItem.Checked = effective;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _log.Error("startup", "read", "startup_read_failed", exception);
+            _startWithWindowsMenuItem.Checked = _settings.StartWithWindows;
+            return false;
         }
     }
 
     private void UpdateStartupMenuState()
     {
+        ReconcileStartupState();
+    }
+
+    private bool ReadEffectiveStartupStateOrThrow()
+    {
         try
         {
-            _startWithWindowsMenuItem.Checked = _startupManager.IsEnabled(Application.ExecutablePath);
+            return _startupCoordinator.GetEffectiveState();
         }
         catch (Exception exception)
         {
             _log.Error("startup", "read", "startup_read_failed", exception);
-            _startWithWindowsMenuItem.Checked = false;
+            throw new InvalidOperationException(
+                "The current-user startup setting could not be read, so settings were not changed.",
+                exception);
+        }
+    }
+
+    private Task CommitSettingsAndStartupAsync(AppSettings settings, bool previousStartupState) =>
+        _startupCoordinator.CommitAsync(settings, previousStartupState, CancellationToken.None);
+
+    private async Task TryRestoreSettingsAndStartupAsync(
+        AppSettings previousSettings,
+        bool previousStartupState,
+        Exception originalException)
+    {
+        try
+        {
+            await _startupCoordinator.RestoreAsync(
+                previousSettings,
+                previousStartupState,
+                CancellationToken.None).ConfigureAwait(true);
+        }
+        catch (Exception rollbackException)
+        {
+            var failure = new InvalidOperationException(
+                "The settings save failed and rollback of the previous settings/startup state also failed.",
+                new AggregateException(originalException, rollbackException));
+            _log.Error(
+                "settings",
+                "rollback",
+                "settings_rollback_failed",
+                failure);
+            throw failure;
         }
     }
 

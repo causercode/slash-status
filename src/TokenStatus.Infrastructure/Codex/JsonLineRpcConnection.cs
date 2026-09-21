@@ -14,6 +14,7 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
     private readonly IReadOnlyList<string> _processArguments;
     private readonly IRedactedLog? _log;
     private readonly TimeSpan _requestTimeout;
+    private readonly int _maximumLineCharacters;
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly SemaphoreSlim _writeGate = new(1, 1);
@@ -31,13 +32,17 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
         string clientVersion,
         IRedactedLog? log = null,
         TimeSpan? requestTimeout = null,
-        IReadOnlyList<string>? processArguments = null)
+        IReadOnlyList<string>? processArguments = null,
+        int maximumLineCharacters = MaximumLineCharacters)
     {
-        _executablePath = executablePath;
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumLineCharacters);
+        _executablePath = Path.GetFullPath(executablePath);
         _clientVersion = clientVersion;
         _log = log;
         _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(15);
         _processArguments = processArguments ?? ["app-server", "--listen", "stdio://"];
+        _maximumLineCharacters = maximumLineCharacters;
     }
 
     public async Task<JsonElement> RequestAsync(
@@ -157,6 +162,11 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                if (source.Task.IsCompleted)
+                {
+                    return await source.Task.ConfigureAwait(false);
+                }
+
                 throw new TimeoutException("The Codex app-server request timed out.");
             }
         }
@@ -197,19 +207,15 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
 
     private async Task ReadLoopAsync(Process process, CancellationToken cancellationToken)
     {
+        var lineReader = new BoundedAsyncLineReader(process.StandardOutput, _maximumLineCharacters);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var line = await process.StandardOutput.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                var line = await lineReader.ReadBoundedLineAsync(cancellationToken).ConfigureAwait(false);
                 if (line is null)
                 {
                     throw new EndOfStreamException("Codex app-server stdout closed.");
-                }
-
-                if (line.Length > MaximumLineCharacters)
-                {
-                    throw new InvalidDataException("Codex app-server returned an oversized JSONL line.");
                 }
 
                 using var document = JsonDocument.Parse(line, new JsonDocumentOptions
@@ -307,11 +313,11 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
             _stderrTask = null;
         }
 
-        cancellation?.Cancel();
         foreach (var pending in _pending.Values)
         {
             pending.TrySetException(reason);
         }
+        cancellation?.Cancel();
 
         if (process is null)
         {

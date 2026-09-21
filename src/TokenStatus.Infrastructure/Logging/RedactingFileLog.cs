@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Security;
 
 namespace TokenStatus.Infrastructure.Logging;
 
@@ -12,6 +13,7 @@ public sealed class RedactingFileLog : IRedactedLog
     private readonly string _filePath;
     private readonly int _retainedFiles;
     private int _disposed;
+    private int _writeDisabled;
 
     public RedactingFileLog(
         string? localApplicationData = null,
@@ -91,13 +93,22 @@ public sealed class RedactingFileLog : IRedactedLog
 
         lock (_gate)
         {
-            if (Volatile.Read(ref _disposed) != 0)
+            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _writeDisabled) != 0)
             {
                 return;
             }
 
-            RotateIfNeeded();
-            File.AppendAllText(_filePath, fields.AppendLine().ToString(), Encoding.UTF8);
+            try
+            {
+                RotateIfNeeded();
+                File.AppendAllText(_filePath, fields.AppendLine().ToString(), Encoding.UTF8);
+            }
+            catch (Exception fileException) when (IsFileSystemFailure(fileException))
+            {
+                // Logging is deliberately best-effort. Do not recursively report
+                // this failure through the same logger, and avoid retry overhead.
+                Interlocked.Exchange(ref _writeDisabled, 1);
+            }
         }
     }
 
@@ -140,4 +151,8 @@ public sealed class RedactingFileLog : IRedactedLog
     {
         Interlocked.Exchange(ref _disposed, 1);
     }
+
+    internal static bool IsFileSystemFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or SecurityException or
+        ArgumentException or NotSupportedException;
 }

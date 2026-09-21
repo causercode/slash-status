@@ -15,11 +15,10 @@ The key is sent only as a bearer credential to the hardcoded HTTPS endpoint `htt
 The solution targets .NET 10 and Windows Forms. The repository includes a `global.json` pinned to the SDK used for development.
 
 ```powershell
-$env:DOTNET_ROOT = 'C:\Users\Daniel\.dotnet-tokenstatus-sdk'
-$env:Path = "$env:DOTNET_ROOT;$env:Path"
-dotnet restore .\TokenStatus.sln
-dotnet build .\TokenStatus.sln -c Release --no-restore
-dotnet test .\TokenStatus.sln -c Release --no-build
+$dotnet = (Get-Command dotnet -CommandType Application).Source
+& $dotnet restore .\TokenStatus.sln
+& $dotnet build .\TokenStatus.sln -c Release --no-restore
+& $dotnet test .\TokenStatus.sln -c Release --no-build
 ```
 
 The application can be launched from `src\TokenStatus.App\bin\Debug\net10.0-windows\TokenStatus.exe` during development. It starts with a gray tray icon while provider data is loading.
@@ -36,23 +35,30 @@ dotnet run --project .\src\TokenStatus.App\TokenStatus.App.csproj -c Debug
 
 ## VS Code
 
-The workspace includes `.vscode/settings.json` and `.vscode/tasks.json`. They point C# Dev Kit and C# at the user-local SDK installed at `C:\Users\Daniel\.dotnet-tokenstatus-sdk\dotnet.exe`, and provide build, test, and publish tasks. C# Dev Kit and the C# extension are both required; reload the VS Code window after installing the SDK so the extension host and integrated terminal receive the updated environment.
+The workspace includes `.vscode/settings.json` and `.vscode/tasks.json` with build, test, and publish tasks. C# Dev Kit and the C# extension are both required. If the SDK is installed outside `PATH`, update the local VS Code task configuration to point at that installation.
 
 If an already-running VS Code process still reports that the SDK is missing, save your work, close all VS Code windows, and run `powershell -ExecutionPolicy Bypass -File .\scripts\Open-TokenStatus-VSCode.ps1` from this folder. A full process restart is required when the original VS Code process started before the SDK was installed.
 
 ## Portable release
 
+Unsigned local development artifacts are explicitly labeled and bypass only the release-source gate when requested:
+
 ```powershell
-dotnet publish .\src\TokenStatus.App\TokenStatus.App.csproj `
-  -c Release `
-  -r win-x64 `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:PublishTrimmed=false `
-  -p:DebugType=None `
-  -o .\publish
-Compress-Archive -Path .\publish\* -DestinationPath .\artifacts\TokenStatus-win-x64-1.0.0.zip -Force
+.\scripts\Publish.ps1 -Version 1.0.0 -AllowDeveloperOverride
 ```
+
+Official releases must run from a clean tag commit and require a trusted Authenticode certificate. Provision the certificate in the current-user `Cert:\CurrentUser\My` store (or import it in CI), then pass its thumbprint:
+
+```powershell
+.\scripts\Publish.ps1 `
+  -Version 1.0.0 `
+  -ReleaseTag v1.0.0 `
+  -ReleaseCommit (git rev-parse HEAD) `
+  -RequireSigning `
+  -CertificateThumbprint '<trusted-certificate-thumbprint>'
+```
+
+The script selects `dotnet` from `PATH` by default, validates it against `global.json`, runs restore/build/test/format/vulnerability checks, publishes to a clean staging directory, signs before packaging, and writes the ZIP plus a SHA-256 release manifest under `artifacts`. Do not create or use a self-signed certificate for an official release. The Windows registry, JSON settings, and Credential Manager are not one transaction; the application uses ordered updates and best-effort rollback, but a process or machine failure can still require manual reconciliation.
 
 The published executable needs no separately installed .NET runtime. Extract it to a user-writable directory such as `%LOCALAPPDATA%\Programs\TokenStatus`.
 

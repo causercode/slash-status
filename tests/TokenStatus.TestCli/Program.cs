@@ -13,12 +13,13 @@ internal static class Program
 
         return args[0].Equals("codex", StringComparison.OrdinalIgnoreCase) ||
                args[0].Equals("app-server", StringComparison.OrdinalIgnoreCase)
-            ? RunCodex()
+            ? RunCodex(args.Skip(1).ToArray())
             : 2;
     }
 
-    private static int RunCodex()
+    private static int RunCodex(string[] options)
     {
+        var oversizedResponse = options.Any(option => option.Equals("oversized", StringComparison.OrdinalIgnoreCase));
         string? line;
         while ((line = Console.In.ReadLine()) is not null)
         {
@@ -27,6 +28,17 @@ internal static class Program
             var method = root.TryGetProperty("method", out var methodElement) ? methodElement.GetString() : null;
             if (!root.TryGetProperty("id", out var id))
             {
+                continue;
+            }
+
+            if (oversizedResponse && method == "initialize")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    id,
+                    result = new { payload = new string('x', 4 * 1024 * 1024 + 1) }
+                }));
+                Console.Out.Flush();
                 continue;
             }
 

@@ -23,14 +23,16 @@ public sealed class StatusViewModel
             ? "Not authenticated"
             : DescribeHealth(Snapshot.CodexAccount.Health);
 
-    public string AwakeSummary => Snapshot.Awake.Mode switch
-    {
-        AwakeMode.Off => "Off",
-        _ when Snapshot.Awake.ExpiresAt is null => Snapshot.Awake.Mode == AwakeMode.System
-            ? "System · until turned off"
-            : "System + display · until turned off",
-        _ => $"{ModeText(Snapshot.Awake.Mode)} · {FormatDuration(Snapshot.Awake.GetRemaining(Now))} remaining"
-    };
+    public string AwakeSummary => !string.IsNullOrWhiteSpace(Snapshot.Awake.UserFacingError)
+        ? Snapshot.Awake.UserFacingError!
+        : Snapshot.Awake.Mode switch
+        {
+            AwakeMode.Off => "Off",
+            _ when Snapshot.Awake.ExpiresAt is null => Snapshot.Awake.Mode == AwakeMode.System
+                ? "System · until turned off"
+                : "System + display · until turned off",
+            _ => $"{ModeText(Snapshot.Awake.Mode)} · {FormatDuration(Snapshot.Awake.GetRemaining(Now))} remaining"
+        };
 
     public string Tooltip => BuildTooltip(Snapshot);
 

@@ -4,7 +4,7 @@
     {
       "label": "TokenStatus: build",
       "type": "shell",
-      "command": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
+      "command": "dotnet",
       "args": ["build", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug"],
       "problemMatcher": "$msCompile",
       "group": { "kind": "build", "isDefault": true }
@@ -12,7 +12,7 @@
     {
       "label": "TokenStatus: test",
       "type": "shell",
-      "command": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
+      "command": "dotnet",
       "args": ["test", "${workspaceFolder}\\TokenStatus.sln", "--configuration", "Debug", "--no-restore"],
       "problemMatcher": "$msCompile"
     },

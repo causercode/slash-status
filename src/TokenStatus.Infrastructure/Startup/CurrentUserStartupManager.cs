@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 namespace TokenStatus.Infrastructure.Startup;
 
 [SupportedOSPlatform("windows")]
-public sealed class CurrentUserStartupManager
+public sealed class CurrentUserStartupManager : IStartupManager
 {
     private const string RunKeyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     public const string ValueName = "TokenStatus";

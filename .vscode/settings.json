@@ -1,22 +1,6 @@
 {
-  "dotnetAcquisitionExtension.sharedExistingDotnetPath": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
-  "dotnetAcquisitionExtension.existingDotnetPath": [
-    {
-      "extensionId": "ms-dotnettools.csharp",
-      "path": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe"
-    },
-    {
-      "extensionId": "ms-dotnettools.csdevkit",
-      "path": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe"
-    }
-  ],
   "dotnet.preferCSharpExtension": false,
-  "dotnet.server.path": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk\\dotnet.exe",
   "dotnet.defaultSolution": "${workspaceFolder}/TokenStatus.sln",
-  "terminal.integrated.env.windows": {
-    "DOTNET_ROOT": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk",
-    "PATH": "C:\\Users\\Daniel\\.dotnet-tokenstatus-sdk;${env:PATH}"
-  },
   "files.exclude": {
     "**/bin": true,
     "**/obj": true,

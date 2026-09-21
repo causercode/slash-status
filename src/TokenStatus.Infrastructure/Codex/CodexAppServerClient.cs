@@ -82,14 +82,15 @@ public sealed class CodexAppServerClient : ICodexUsageClient
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        var executable = ExecutableResolver.ResolveCodex(_configuredPath);
-        if (executable is null)
+        var resolution = ExecutableResolver.ResolveCodexWithProvenance(_configuredPath);
+        if (resolution is null)
         {
             throw new ProviderFailureException(
                 ProviderHealth.NotInstalled,
                 "Codex CLI was not found.",
                 "codex_not_installed");
         }
+        var executable = resolution.Path;
 
         await WaitForRestartBackoffAsync(cancellationToken).ConfigureAwait(false);
 
@@ -133,6 +134,17 @@ public sealed class CodexAppServerClient : ICodexUsageClient
                 ProviderHealth.Stale,
                 "Codex did not respond before the request timed out.",
                 "codex_request_timeout",
+                exception);
+        }
+        catch (InvalidDataException exception)
+        {
+            RegisterRestartFailure();
+            _log?.Error("codex", operation, "response_too_large", exception);
+            await ResetConnectionAsync(connection).ConfigureAwait(false);
+            throw new ProviderFailureException(
+                ProviderHealth.Error,
+                "Codex returned a response that was too large.",
+                "codex_response_too_large",
                 exception);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)

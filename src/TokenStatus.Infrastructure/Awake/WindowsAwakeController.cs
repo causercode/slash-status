@@ -145,14 +145,39 @@ public sealed class WindowsAwakeController : IAwakeController
     {
         var now = _clock.UtcNow;
         var state = new AwakeState(mode, now, duration is { } value ? now + value : null);
-        _native.Set(GetFlags(mode));
+        if (!_native.Set(GetFlags(mode)))
+        {
+            _native.Set(ExecutionState.Continuous);
+            SetCurrent(new AwakeState(
+                AwakeMode.Off,
+                null,
+                null,
+                "Windows could not enable keep-awake mode.",
+                "awake_activation_failed"));
+            return;
+        }
+
         SetCurrent(state);
     }
 
     private void ApplyCurrentFlags()
     {
         var mode = Current.Mode;
-        _native.Set(GetFlags(mode));
+        if (mode == AwakeMode.Off)
+        {
+            return;
+        }
+
+        if (!_native.Set(GetFlags(mode)))
+        {
+            _native.Set(ExecutionState.Continuous);
+            SetCurrent(new AwakeState(
+                AwakeMode.Off,
+                null,
+                null,
+                "Windows could not restore keep-awake mode after resume.",
+                "awake_reassert_failed"));
+        }
     }
 
     private void ApplyOff()

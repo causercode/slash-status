@@ -1,0 +1,92 @@
+name: TokenStatus build and release
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.401
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore .\TokenStatus.sln
+      - name: Build
+        shell: pwsh
+        run: dotnet build .\TokenStatus.sln --configuration Release --no-restore
+      - name: Test
+        shell: pwsh
+        run: dotnet test .\TokenStatus.sln --configuration Release --no-build
+      - name: Verify formatting
+        shell: pwsh
+        run: dotnet format .\TokenStatus.sln --verify-no-changes
+      - name: Audit packages
+        shell: pwsh
+        run: |
+          $audit = dotnet list .\TokenStatus.sln package --vulnerable --include-transitive | Out-String
+          if ($audit -match 'has the following vulnerable packages' -or $audit -match '(?im)^\s*\S+\s+\S+\s+(Critical|High|Moderate|Low)\s+') {
+              throw 'The NuGet vulnerability audit reported vulnerable packages.'
+          }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.401
+      - name: Import trusted signing certificate
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64) -or [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) {
+              throw "Official releases require signing certificate secrets."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "tokenstatus-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
+          $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password | Out-Null
+          Remove-Item -LiteralPath $certificatePath -Force
+      - name: Publish signed release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          SIGNING_THUMBPRINT: ${{ secrets.TOKENSTATUS_SIGNING_CERTIFICATE_THUMBPRINT }}
+          TIMESTAMP_SERVER: ${{ secrets.TOKENSTATUS_TIMESTAMP_SERVER }}
+        run: |
+          $version = $env:RELEASE_VERSION -replace '^v', ''
+          $timestamp = if ([string]::IsNullOrWhiteSpace($env:TIMESTAMP_SERVER)) { 'http://timestamp.digicert.com' } else { $env:TIMESTAMP_SERVER }
+          .\scripts\Publish.ps1 `
+            -Version $version `
+            -ReleaseTag $env:RELEASE_VERSION `
+            -ReleaseCommit $env:GITHUB_SHA `
+            -DotNetPath ((Get-Command dotnet -CommandType Application).Source) `
+            -RequireSigning `
+            -CertificateThumbprint $env:SIGNING_THUMBPRINT `
+            -TimestampServer $timestamp
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenStatus-${{ github.ref_name }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.manifest.json

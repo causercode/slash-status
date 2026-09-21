@@ -30,13 +30,27 @@ public sealed class SnapshotStore
         ArgumentNullException.ThrowIfNull(update);
 
         AppSnapshot next;
+        var changed = false;
         lock (_gate)
         {
             next = update(_current);
-            _current = next;
+            ArgumentNullException.ThrowIfNull(next);
+            if (!ReferenceEquals(next, _current) && !Equals(next, _current))
+            {
+                _current = next;
+                changed = true;
+            }
+            else
+            {
+                next = _current;
+            }
         }
 
-        Changed?.Invoke(next);
+        if (changed)
+        {
+            Changed?.Invoke(next);
+        }
+
         return next;
     }
 }

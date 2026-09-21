@@ -7,9 +7,9 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
-    <RepositoryUrl>https://local.invalid/TokenStatus</RepositoryUrl>
     <Authors>/status</Authors>
     <Company>/status</Company>
     <Product>/status</Product>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

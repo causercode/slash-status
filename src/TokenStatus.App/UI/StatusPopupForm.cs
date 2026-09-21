@@ -28,6 +28,7 @@ public sealed class StatusPopupForm : Form
     private readonly LayoutInspectorOverlay _layoutInspector;
 #endif
     private AppSnapshot _snapshot;
+    private bool _hasRenderedSnapshot;
 
     public StatusPopupForm(
         AppSnapshot initialSnapshot,
@@ -111,6 +112,7 @@ public sealed class StatusPopupForm : Form
         openCodeCard.AddRow(_openCodeQuotaErrorLabel);
 
         _awakeLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
+        _awakeLabel.AccessibleName = "Keep awake status";
         var awakeCard = new SectionCard();
         _content.AddRow(awakeCard);
         AddSectionHeader(awakeCard, "Keep awake");
@@ -234,28 +236,38 @@ public sealed class StatusPopupForm : Form
 
     public void UpdateSnapshot(AppSnapshot snapshot)
     {
-        if (IsDisposed)
+        if (IsDisposed || (_hasRenderedSnapshot && ReferenceEquals(_snapshot, snapshot)))
         {
             return;
         }
 
+        var previous = _hasRenderedSnapshot ? _snapshot : null;
         _snapshot = snapshot;
+        _hasRenderedSnapshot = true;
         var view = new StatusViewModel(snapshot, DateTimeOffset.UtcNow);
         _codexHealthIndicator.SetHealth(snapshot.CodexRateLimits.Health);
         _todayTokensLabel.Text = $"Today  {StatusViewModel.FormatTokens(snapshot.CodexTokenUsage.Value?.GetTokensForDate(DateOnly.FromDateTime(DateTime.Now)))} tokens";
         _lifetimeTokensLabel.Text = $"Lifetime  {StatusViewModel.FormatTokens(snapshot.CodexTokenUsage.Value?.LifetimeTokens)} tokens";
         _codexErrorLabel.Text = snapshot.CodexRateLimits.UserFacingError ?? snapshot.CodexAccount.UserFacingError ?? string.Empty;
         _codexErrorLabel.Visible = !string.IsNullOrWhiteSpace(_codexErrorLabel.Text);
-        UpdateRateLimitRows(snapshot, view.Now);
+        if (previous is null || !Equals(previous.CodexRateLimits, snapshot.CodexRateLimits))
+        {
+            UpdateRateLimitRows(snapshot, view.Now);
+        }
 
         _openCodeHealthIndicator.SetHealth(snapshot.OpenCodeGoQuota.Health);
-        UpdateOpenCodeQuotaRows(snapshot, view.Now);
+        if (previous is null || !Equals(previous.OpenCodeGoQuota, snapshot.OpenCodeGoQuota))
+        {
+            UpdateOpenCodeQuotaRows(snapshot, view.Now);
+        }
         _openCodeQuotaErrorLabel.Text = snapshot.OpenCodeGoQuota.UserFacingError ?? string.Empty;
         _openCodeQuotaErrorLabel.Tag = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured ? "muted" : "error";
         _openCodeQuotaErrorLabel.Visible = !string.IsNullOrWhiteSpace(_openCodeQuotaErrorLabel.Text);
         WindowsTheme.Apply(_openCodeQuotaErrorLabel);
 
         _awakeLabel.Text = view.AwakeSummary;
+        _awakeLabel.Tag = snapshot.Awake.UserFacingError is null ? null : "error";
+        WindowsTheme.Apply(_awakeLabel);
         _updatedLabel.Text = $"Updated {FormatAge(snapshot.CapturedAt, view.Now)}";
     }
 
