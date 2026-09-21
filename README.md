@@ -37,12 +37,15 @@ The app has no main window or console UI. Look for its icon in the Windows notif
 
 ### Optional developer checks
 
-These are also run by the release pipeline:
+Formatting and the package audit are also run by the release pipeline. The UI Automation inspection is a read-only manual check:
 
 ```powershell
 .\scripts\Invoke-DotNet.ps1 format .\TokenStatus.sln --verify-no-changes
 .\scripts\Invoke-DotNet.ps1 list .\TokenStatus.sln package --vulnerable --include-transitive
+.\scripts\Inspect-Accessibility.ps1
 ```
+
+The accessibility inspection script is read-only. With /status running, it reports only TokenStatus windows and each UI Automation element's name, role, focusability, enabled/offscreen state, and bounds.
 
 ### Debug layout inspector
 
@@ -54,7 +57,7 @@ Debug builds include a layout overlay for the tray popup. Open the popup and pre
 - Building from source requires the .NET 10 SDK selected by `global.json`.
 - A portable published release is self-contained and does not require .NET.
 - The Codex CLI is optional. Without it, the app still runs and reports Codex as unavailable.
-- An OpenCode Go API key is optional. Without it, the OpenCode card explains that configuration is required.
+- An OpenCode Go API key is optional. Without it, the OpenCode Go card explains that configuration is required.
 
 ## Configure OpenCode Go quota
 

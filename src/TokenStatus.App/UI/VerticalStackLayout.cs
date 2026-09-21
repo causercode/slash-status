@@ -11,6 +11,7 @@ internal class VerticalStackLayout : TableLayoutPanel
         GrowStyle = TableLayoutPanelGrowStyle.AddRows;
         Margin = new Padding(0);
         Padding = new Padding(0);
+        TabStop = false;
         ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
     }
 

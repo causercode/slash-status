@@ -9,6 +9,8 @@ internal static class WindowsTheme
     private const int DwmUseImmersiveDarkMode = 20;
     private const int DwmWindowCornerPreference = 33;
 
+    public static bool IsHighContrastEnabled => SystemInformation.HighContrast;
+
     public static bool IsDarkModeEnabled()
     {
         try
@@ -22,21 +24,26 @@ internal static class WindowsTheme
         }
     }
 
-    public static Color GetAccentColor() => IsDarkModeEnabled()
-        ? ThemePalette.Dark.Accent
-        : ThemePalette.Light.Accent;
+    public static Color GetAccentColor() => IsHighContrastEnabled
+        ? SystemColors.Highlight
+        : IsDarkModeEnabled()
+            ? ThemePalette.Dark.Accent
+            : ThemePalette.Light.Accent;
 
-    public static Color GetSurfaceBorderColor() => IsDarkModeEnabled()
-        ? ThemePalette.Dark.SurfaceBorder
-        : ThemePalette.Light.SurfaceBorder;
+    public static Color GetSurfaceBorderColor() => IsHighContrastEnabled
+        ? SystemColors.WindowText
+        : IsDarkModeEnabled()
+            ? ThemePalette.Dark.SurfaceBorder
+            : ThemePalette.Light.SurfaceBorder;
 
     public static void Apply(Control root)
     {
+        var highContrast = IsHighContrastEnabled;
         var dark = IsDarkModeEnabled();
-        var palette = dark ? ThemePalette.Dark : ThemePalette.Light;
+        var palette = highContrast ? ThemePalette.HighContrast : dark ? ThemePalette.Dark : ThemePalette.Light;
         ApplyControl(root, palette, dark);
 
-        if (root is Form form && form.IsHandleCreated)
+        if (!highContrast && root is Form form && form.IsHandleCreated)
         {
             var enabled = dark ? 1 : 0;
             _ = DwmSetWindowAttribute(form.Handle, DwmUseImmersiveDarkMode, ref enabled, sizeof(int));
@@ -47,11 +54,14 @@ internal static class WindowsTheme
 
     public static void Apply(ContextMenuStrip menu)
     {
+        var highContrast = IsHighContrastEnabled;
         var dark = IsDarkModeEnabled();
-        var palette = dark ? ThemePalette.Dark : ThemePalette.Light;
+        var palette = highContrast ? ThemePalette.HighContrast : dark ? ThemePalette.Dark : ThemePalette.Light;
         menu.BackColor = palette.Background;
         menu.ForeColor = palette.Foreground;
-        menu.Renderer = dark
+        menu.Renderer = highContrast
+            ? new ToolStripSystemRenderer()
+            : dark
             ? new ToolStripProfessionalRenderer(new DarkColorTable(palette))
             : new ToolStripSystemRenderer();
         ApplyItems(menu.Items, palette);
@@ -59,6 +69,7 @@ internal static class WindowsTheme
 
     private static void ApplyControl(Control control, ThemePalette palette, bool dark)
     {
+        var highContrast = IsHighContrastEnabled;
         var role = control.Tag as string;
         control.ForeColor = role switch
         {
@@ -80,14 +91,33 @@ internal static class WindowsTheme
             case Button button:
                 button.BackColor = palette.ButtonBackground;
                 button.ForeColor = palette.Foreground;
-                button.UseVisualStyleBackColor = !dark;
-                button.FlatStyle = dark ? FlatStyle.Flat : FlatStyle.Standard;
+                button.UseVisualStyleBackColor = highContrast || !dark;
+                button.FlatStyle = highContrast ? FlatStyle.Standard : dark ? FlatStyle.Flat : FlatStyle.Standard;
                 button.FlatAppearance.BorderColor = palette.Border;
+                break;
+            case RadioButton radioButton:
+                radioButton.BackColor = Color.Transparent;
+                radioButton.ForeColor = !radioButton.Enabled && dark ? palette.Muted : palette.Foreground;
+                var useNativeIndicator = highContrast || !dark || radioButton.Enabled;
+                radioButton.UseVisualStyleBackColor = useNativeIndicator;
+                radioButton.FlatStyle = useNativeIndicator ? FlatStyle.Standard : FlatStyle.Flat;
+                break;
+            case GroupBox groupBox:
+                groupBox.BackColor = Color.Transparent;
+                groupBox.ForeColor = !groupBox.Enabled && dark ? palette.Muted : palette.Foreground;
                 break;
             case Label:
             case ProviderIcon:
             case ProviderHealthIndicator:
                 control.BackColor = Color.Transparent;
+                break;
+            case ProgressBar:
+                if (!highContrast)
+                {
+                    control.BackColor = palette.InputBackground;
+                    control.ForeColor = palette.Accent;
+                }
+
                 break;
             case Panel:
                 control.BackColor = role == "background" ? palette.Background : Color.Transparent;
@@ -108,9 +138,15 @@ internal static class WindowsTheme
             ApplyControl(child, palette, dark);
         }
 
-        if (control.IsHandleCreated && control is ScrollableControl or TextBoxBase or NumericUpDown)
+        if (!highContrast && control.IsHandleCreated &&
+            (control is ScrollableControl or TextBoxBase or NumericUpDown or ProgressBar))
         {
             _ = SetWindowTheme(control.Handle, dark ? "DarkMode_Explorer" : "Explorer", null);
+        }
+
+        if (control is PaddedNumericUpDown numericInput)
+        {
+            numericInput.ApplyContentMargins();
         }
     }
 
@@ -171,6 +207,19 @@ internal static class WindowsTheme
             Color.FromArgb(174, 174, 179),
             Color.FromArgb(194, 145, 105),
             Color.FromArgb(255, 145, 145));
+
+        public static ThemePalette HighContrast { get; } = new(
+            SystemColors.Window,
+            SystemColors.Window,
+            SystemColors.WindowText,
+            SystemColors.WindowText,
+            SystemColors.Window,
+            SystemColors.Control,
+            SystemColors.WindowText,
+            SystemColors.Highlight,
+            SystemColors.GrayText,
+            SystemColors.Highlight,
+            SystemColors.WindowText);
     }
 
     private sealed class DarkColorTable(ThemePalette palette) : ProfessionalColorTable

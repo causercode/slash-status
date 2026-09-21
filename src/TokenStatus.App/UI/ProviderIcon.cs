@@ -22,7 +22,7 @@ internal sealed class ProviderIcon : Control
         Size = new Size(22, 22);
         Tag = "accent";
         AccessibleRole = AccessibleRole.Graphic;
-        AccessibleName = kind == ProviderIconKind.Codex ? "Codex" : "OpenCode";
+        AccessibleName = kind == ProviderIconKind.Codex ? "Codex" : "OpenCode Go";
         SetStyle(
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer |

@@ -40,6 +40,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
     private TrayHealth _lastTrayHealth = TrayHealth.Gray;
     private Icon? _trayIcon;
     private int _shuttingDown;
+    private int _manualRefreshInProgress;
 
     public TokenStatusApplicationContext(
         Mutex instanceMutex,
@@ -100,7 +101,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         awake.DropDownItems.Add(CreateAwakeDurationMenu("System + display", AwakeMode.SystemAndDisplay));
         _trayMenu.Items.Add(awake);
 
-        var dashboard = new ToolStripMenuItem("Open Go Usage Dashboard");
+        var dashboard = new ToolStripMenuItem("OpenCode Go usage dashboard");
         dashboard.Click += (_, _) => OpenDashboard();
         _trayMenu.Items.Add(dashboard);
 
@@ -279,7 +280,10 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
 
     private void UserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
-        if (e.Category is UserPreferenceCategory.Color or UserPreferenceCategory.General or UserPreferenceCategory.VisualStyle)
+        if (e.Category is UserPreferenceCategory.Color or
+            UserPreferenceCategory.General or
+            UserPreferenceCategory.VisualStyle or
+            UserPreferenceCategory.Accessibility)
         {
             _uiContext.Post(_ =>
             {
@@ -306,22 +310,56 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         _popup.ShowPopup();
     }
 
-    private async Task RefreshNowAsync()
+    private async Task<RefreshOutcome> RefreshNowAsync()
     {
         if (_coordinator is null)
         {
-            return;
+            return new RefreshOutcome(false, "Refresh is not ready yet.");
+        }
+
+        if (Interlocked.CompareExchange(ref _manualRefreshInProgress, 1, 0) != 0)
+        {
+            return new RefreshOutcome(true, "Refresh is already in progress.");
         }
 
         try
         {
             await _coordinator.RefreshNowAsync().ConfigureAwait(true);
+            var snapshot = _snapshots.Current;
+            var failed = IsRefreshFailure(snapshot.CodexAccount.Health) ||
+                IsRefreshFailure(snapshot.CodexRateLimits.Health) ||
+                IsRefreshFailure(snapshot.CodexTokenUsage.Health) ||
+                IsRefreshFailure(snapshot.OpenCodeGoQuota.Health);
+
+            if (failed)
+            {
+                return new RefreshOutcome(false, "Refresh completed with provider errors. Showing the last available values.");
+            }
+
+            var notConfigured = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured;
+            return new RefreshOutcome(
+                true,
+                notConfigured
+                    ? "Updated just now. OpenCode Go needs configuration."
+                    : "Updated just now.");
         }
         catch (Exception exception)
         {
             _log.Error("app", "refresh_now", "refresh_now_failed", exception);
+            return new RefreshOutcome(false, "Refresh failed. Showing the last available values.");
+        }
+        finally
+        {
+            Volatile.Write(ref _manualRefreshInProgress, 0);
         }
     }
+
+    private static bool IsRefreshFailure(ProviderHealth health) => health is
+        ProviderHealth.Error or
+        ProviderHealth.Stale or
+        ProviderHealth.NotInstalled or
+        ProviderHealth.NotAuthenticated or
+        ProviderHealth.Unsupported;
 
     private void OpenDashboard()
     {

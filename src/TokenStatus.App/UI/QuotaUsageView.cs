@@ -10,6 +10,9 @@ internal sealed class QuotaUsageView : TableLayoutPanel
         RowCount = 3;
         Margin = new Padding(0, LayoutMetrics.XSmall, 0, LayoutMetrics.XSmall);
         Padding = new Padding(0);
+        AccessibleRole = AccessibleRole.Grouping;
+        AccessibleName = $"{title} quota";
+        TabStop = false;
         ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         RowStyles.Add(new RowStyle(SizeType.AutoSize));
         RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -31,7 +34,9 @@ internal sealed class QuotaUsageView : TableLayoutPanel
             Text = title,
             AutoSize = true,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Margin = new Padding(0)
+            Margin = new Padding(0),
+            AccessibleName = title,
+            TabStop = false
         }, 0, 0);
 
         header.Controls.Add(new Label
@@ -41,72 +46,40 @@ internal sealed class QuotaUsageView : TableLayoutPanel
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.TopRight,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Margin = new Padding(0)
+            Margin = new Padding(0),
+            AccessibleName = $"{title}: {remainingPercent}% remaining",
+            TabStop = false
         }, 1, 0);
 
-        var bar = new RemainingUsageBar(remainingPercent)
+        var bar = new ProgressBar
         {
             Height = 14,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall)
+            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall),
+            Minimum = 0,
+            Maximum = 100,
+            Value = Math.Clamp(remainingPercent, 0, 100),
+            Style = ProgressBarStyle.Continuous,
+            AccessibleRole = AccessibleRole.ProgressBar,
+            AccessibleName = $"{title} quota remaining",
+            AccessibleDescription = $"{Math.Clamp(remainingPercent, 0, 100)} percent of the {title.ToLowerInvariant()} quota remains.",
+            TabStop = false
         };
 
         var reset = new Label
         {
             Text = resetText,
             AutoSize = true,
-            MaximumSize = new Size(382, 0),
+            MaximumSize = new Size(0, 0),
             Font = new Font("Segoe UI", 8, FontStyle.Regular),
             Tag = "muted",
-            Margin = new Padding(0, 0, 0, 0)
+            Margin = new Padding(0, 0, 0, 0),
+            AccessibleName = resetText,
+            TabStop = false
         };
 
         Controls.Add(header, 0, 0);
         Controls.Add(bar, 0, 1);
         Controls.Add(reset, 0, 2);
-    }
-
-    private sealed class RemainingUsageBar : Control
-    {
-        private readonly int _remainingPercent;
-
-        public RemainingUsageBar(int remainingPercent)
-        {
-            _remainingPercent = Math.Clamp(remainingPercent, 0, 100);
-            Tag = "transparent";
-            AccessibleRole = AccessibleRole.ProgressBar;
-            AccessibleName = $"{_remainingPercent}% usage remaining";
-            SetStyle(
-                ControlStyles.AllPaintingInWmPaint |
-                ControlStyles.OptimizedDoubleBuffer |
-                ControlStyles.ResizeRedraw |
-                ControlStyles.SupportsTransparentBackColor |
-                ControlStyles.UserPaint,
-                true);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            var dark = WindowsTheme.IsDarkModeEnabled();
-            var trackColor = dark ? Color.FromArgb(58, 58, 61) : Color.FromArgb(220, 223, 228);
-            var fillColor = dark ? Color.FromArgb(210, 210, 213) : Color.FromArgb(74, 88, 112);
-            var borderColor = dark ? Color.FromArgb(105, 105, 110) : Color.FromArgb(145, 150, 160);
-            var bounds = new Rectangle(0, 1, Math.Max(1, ClientSize.Width - 1), Math.Max(1, ClientSize.Height - 3));
-
-            using var trackBrush = new SolidBrush(trackColor);
-            using var fillBrush = new SolidBrush(fillColor);
-            using var borderPen = new Pen(borderColor);
-            e.Graphics.FillRectangle(trackBrush, bounds);
-
-            var inner = Rectangle.Inflate(bounds, -1, -1);
-            var fillWidth = (int)Math.Round(inner.Width * (_remainingPercent / 100d));
-            if (fillWidth > 0)
-            {
-                e.Graphics.FillRectangle(fillBrush, new Rectangle(inner.X, inner.Y, fillWidth, inner.Height));
-            }
-
-            e.Graphics.DrawRectangle(borderPen, bounds);
-        }
     }
 }

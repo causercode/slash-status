@@ -15,6 +15,8 @@ internal sealed class SectionCard : VerticalStackLayout
             LayoutMetrics.Small);
         Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall);
         Tag = "surface";
+        AccessibleRole = AccessibleRole.Grouping;
+        TabStop = false;
         SetStyle(
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer |

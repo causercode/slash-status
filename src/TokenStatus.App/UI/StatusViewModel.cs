@@ -29,9 +29,9 @@ public sealed class StatusViewModel
         {
             AwakeMode.Off => "Off",
             _ when Snapshot.Awake.ExpiresAt is null => Snapshot.Awake.Mode == AwakeMode.System
-                ? "System · until turned off"
-                : "System + display · until turned off",
-            _ => $"{ModeText(Snapshot.Awake.Mode)} · {FormatDuration(Snapshot.Awake.GetRemaining(Now))} remaining"
+                ? "Active: System - until turned off"
+                : "Active: System + display - until turned off",
+            _ => $"Active: {ModeText(Snapshot.Awake.Mode)} - {FormatDuration(Snapshot.Awake.GetRemaining(Now))} remaining"
         };
 
     public string Tooltip => BuildTooltip(Snapshot);
@@ -47,7 +47,7 @@ public sealed class StatusViewModel
         var awake = snapshot.Awake.GetRemaining(DateTimeOffset.UtcNow) is { } remaining
             ? FormatShortDuration(remaining)
             : snapshot.Awake.IsActive ? "on" : "off";
-        var text = $"Codex {codex}/{secondary} left | OC {openCode} left | Awake {awake}";
+        var text = $"Codex {codex}/{secondary} left | OpenCode Go {openCode} left | Awake {awake}";
         return text.Length <= 63 ? text : text[..63];
     }
 
@@ -65,7 +65,7 @@ public sealed class StatusViewModel
     };
 
     public static string FormatPercent(int? usedPercent) => usedPercent is { } value
-        ? $"{Math.Clamp(value, 0, 100)}% used · {100 - Math.Clamp(value, 0, 100)}% remaining"
+        ? $"{Math.Clamp(value, 0, 100)}% used - {100 - Math.Clamp(value, 0, 100)}% remaining"
         : "Not provided";
 
     public static string FormatTokens(long? tokens)

@@ -1,19 +1,23 @@
-using TokenStatus.Core.Models;
 using System.Drawing.Drawing2D;
+using TokenStatus.Core.Models;
 
 namespace TokenStatus.App.UI;
 
+public sealed record RefreshOutcome(bool Succeeded, string Message);
+
 public sealed class StatusPopupForm : Form
 {
-    private const int PopupWidth = 460;
+    private const int BasePopupWidth = 460;
     private const int MinimumPopupHeight = 460;
     private const int ScreenEdgeGap = 4;
 
-    private readonly Action _refresh;
+    private readonly Func<Task<RefreshOutcome>> _refresh;
     private readonly Action _openSettings;
     private readonly Action _exit;
     private readonly Action<AwakeMode, TimeSpan?> _setAwake;
     private readonly VerticalStackLayout _content;
+    private readonly Button _refreshButton;
+    private readonly Label _liveStatusLabel;
     private readonly Label _updatedLabel;
     private readonly ProviderHealthIndicator _codexHealthIndicator;
     private readonly VerticalStackLayout _limitsPanel;
@@ -23,16 +27,31 @@ public sealed class StatusPopupForm : Form
     private readonly ProviderHealthIndicator _openCodeHealthIndicator;
     private readonly VerticalStackLayout _openCodeLimitsPanel;
     private readonly Label _openCodeQuotaErrorLabel;
+    private readonly Button _openCodeSettingsButton;
     private readonly Label _awakeLabel;
+    private readonly GroupBox _awakeDurationGroup;
+    private readonly RadioButton _awakeOffRadio;
+    private readonly RadioButton _awakeSystemRadio;
+    private readonly RadioButton _awakeSystemAndDisplayRadio;
+    private readonly RadioButton _awakeThirtyMinutesRadio;
+    private readonly RadioButton _awakeOneHourRadio;
+    private readonly RadioButton _awakeTwoHoursRadio;
+    private readonly RadioButton _awakeFourHoursRadio;
+    private readonly RadioButton _awakeUntilOffRadio;
+    private readonly Button _applyAwakeButton;
+    private readonly System.Windows.Forms.Timer _relativeTimeTimer;
 #if DEBUG
     private readonly LayoutInspectorOverlay _layoutInspector;
 #endif
     private AppSnapshot _snapshot;
     private bool _hasRenderedSnapshot;
+    private bool _refreshInProgress;
+    private bool _synchronizingAwakeSelection;
+    private bool _awakeSelectionDirty;
 
     public StatusPopupForm(
         AppSnapshot initialSnapshot,
-        Action refresh,
+        Func<Task<RefreshOutcome>> refresh,
         Action openSettings,
         Action<AwakeMode, TimeSpan?> setAwake,
         Action exit)
@@ -43,6 +62,10 @@ public sealed class StatusPopupForm : Form
         _setAwake = setAwake;
         _exit = exit;
 
+        Text = "/status usage";
+        AccessibleName = "/status usage and keep-awake status";
+        AccessibleDescription = "View provider quota, refresh status, and keep-awake controls.";
+        AccessibleRole = AccessibleRole.Window;
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.None;
         Tag = "chrome-border";
@@ -51,14 +74,14 @@ public sealed class StatusPopupForm : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
         KeyPreview = true;
-        Width = PopupWidth;
+        Width = BasePopupWidth;
         Height = 590;
 
         _content = new VerticalStackLayout
         {
             Dock = DockStyle.Fill,
             AutoSize = false,
-            AutoScroll = false,
+            AutoScroll = true,
             Padding = new Padding(
                 LayoutMetrics.Medium,
                 LayoutMetrics.Small,
@@ -70,10 +93,13 @@ public sealed class StatusPopupForm : Form
 
         var title = new TableLayoutPanel
         {
-            Height = 40,
+            AutoSize = true,
+            Dock = DockStyle.Top,
             ColumnCount = 2,
             Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall),
-            Padding = new Padding(LayoutMetrics.Large, 0, LayoutMetrics.Large, 0)
+            Padding = new Padding(LayoutMetrics.Large, 0, LayoutMetrics.Large, 0),
+            AccessibleRole = AccessibleRole.Grouping,
+            AccessibleName = "/status controls"
         };
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
         title.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
@@ -83,18 +109,30 @@ public sealed class StatusPopupForm : Form
             FontStyle.Bold,
             fontFamily: GetConsoleFontFamily());
         titleLabel.Tag = "accent";
+        titleLabel.AccessibleName = AppBrand.DisplayName;
         title.Controls.Add(titleLabel, 0, 0);
-        var refreshButton = CreateButton("Refresh", (_, _) => _refresh());
-        refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        title.Controls.Add(refreshButton, 1, 0);
+        _refreshButton = CreateButton("&Refresh", async (_, _) => await RefreshClickedAsync().ConfigureAwait(true), 112);
+        _refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _refreshButton.TabIndex = 0;
+        _refreshButton.AccessibleDescription = "Refresh all provider data.";
+        title.Controls.Add(_refreshButton, 1, 0);
         _content.AddRow(title);
 
-        _codexErrorLabel = CreateErrorLabel();
+        _liveStatusLabel = CreateLabel("Ready.", 8, FontStyle.Regular);
+        _liveStatusLabel.Tag = "muted";
+        _liveStatusLabel.AccessibleRole = AccessibleRole.StatusBar;
+        _liveStatusLabel.AccessibleName = "Status updates";
+        _liveStatusLabel.AccessibleDescription = "Current status and operation updates.";
+        _content.AddRow(_liveStatusLabel);
+
+        _codexErrorLabel = CreateErrorLabel("Codex error details");
         _limitsPanel = CreateLimitsPanel();
         _todayTokensLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
+        _todayTokensLabel.AccessibleName = "Codex tokens today";
         _lifetimeTokensLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
+        _lifetimeTokensLabel.AccessibleName = "Codex lifetime tokens";
 
-        var codexCard = new SectionCard();
+        var codexCard = new SectionCard { AccessibleName = "Codex provider" };
         _content.AddRow(codexCard);
         _codexHealthIndicator = AddProviderSectionHeader(codexCard, "Codex", ProviderIconKind.Codex);
         codexCard.AddRow(_limitsPanel);
@@ -103,53 +141,106 @@ public sealed class StatusPopupForm : Form
         codexCard.AddRow(_codexErrorLabel);
 
         _openCodeLimitsPanel = CreateLimitsPanel();
-        _openCodeQuotaErrorLabel = CreateErrorLabel();
+        _openCodeQuotaErrorLabel = CreateErrorLabel("OpenCode Go error details");
+        _openCodeSettingsButton = CreateButton("Open &provider settings", (_, _) => OpenSettings(), 168);
+        _openCodeSettingsButton.TabIndex = 5;
+        _openCodeSettingsButton.Visible = false;
 
-        var openCodeCard = new SectionCard();
+        var openCodeCard = new SectionCard { AccessibleName = "OpenCode Go provider" };
         _content.AddRow(openCodeCard);
-        _openCodeHealthIndicator = AddProviderSectionHeader(openCodeCard, "OpenCode", ProviderIconKind.OpenCode);
+        _openCodeHealthIndicator = AddProviderSectionHeader(openCodeCard, "OpenCode Go", ProviderIconKind.OpenCode);
         openCodeCard.AddRow(_openCodeLimitsPanel);
         openCodeCard.AddRow(_openCodeQuotaErrorLabel);
+        openCodeCard.AddRow(_openCodeSettingsButton);
 
         _awakeLabel = CreateLabel(string.Empty, 9, FontStyle.Regular);
         _awakeLabel.AccessibleName = "Keep awake status";
-        var awakeCard = new SectionCard();
+        _awakeLabel.AccessibleDescription = "The currently applied keep-awake mode and remaining time.";
+        var awakeCard = new SectionCard { AccessibleName = "Keep awake" };
         _content.AddRow(awakeCard);
         AddSectionHeader(awakeCard, "Keep awake");
         awakeCard.AddRow(_awakeLabel);
-        var awakeButtons = new FlowLayoutPanel
-        {
-            Height = 40,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
-        };
-        awakeButtons.Controls.Add(CreateButton("Off", (_, _) => _setAwake(AwakeMode.Off, null), 55));
-        awakeButtons.Controls.Add(CreateButton("System", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(1)), 90));
-        awakeButtons.Controls.Add(CreateButton("System + display", (_, _) => _setAwake(AwakeMode.SystemAndDisplay, TimeSpan.FromHours(1)), 180));
-        awakeCard.AddRow(awakeButtons);
-        var durationButtons = new FlowLayoutPanel
-        {
-            Height = 40,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
-        };
-        durationButtons.Controls.Add(CreateButton("30m", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromMinutes(30)), 55));
-        durationButtons.Controls.Add(CreateButton("2h", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(2)), 55));
-        durationButtons.Controls.Add(CreateButton("4h", (_, _) => _setAwake(AwakeMode.System, TimeSpan.FromHours(4)), 55));
-        durationButtons.Controls.Add(CreateButton("Until off", (_, _) => _setAwake(AwakeMode.System, null), 100));
-        awakeCard.AddRow(durationButtons);
 
-        var footer = new TableLayoutPanel { Height = 40, ColumnCount = 3, Margin = new Padding(0, 4, 0, 0) };
+        var awakeModeGroup = new GroupBox
+        {
+            Text = "Mode",
+            AccessibleName = "Keep awake mode",
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            Padding = new Padding(LayoutMetrics.Small, LayoutMetrics.Small, LayoutMetrics.Small, 0),
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
+        };
+        var modePanel = CreateRadioPanel();
+        _awakeOffRadio = CreateRadioButton("&Off", 1);
+        _awakeSystemRadio = CreateRadioButton("&System", 2);
+        _awakeSystemAndDisplayRadio = CreateRadioButton("System + &display", 3);
+        modePanel.Controls.Add(_awakeOffRadio);
+        modePanel.Controls.Add(_awakeSystemRadio);
+        modePanel.Controls.Add(_awakeSystemAndDisplayRadio);
+        awakeModeGroup.Controls.Add(modePanel);
+        awakeCard.AddRow(awakeModeGroup);
+
+        _awakeDurationGroup = new GroupBox
+        {
+            Text = "Duration",
+            AccessibleName = "Keep awake duration",
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            Padding = new Padding(LayoutMetrics.Small, LayoutMetrics.Small, LayoutMetrics.Small, 0),
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0)
+        };
+        var durationPanel = CreateRadioPanel();
+        _awakeThirtyMinutesRadio = CreateRadioButton("&30 minutes", 4);
+        _awakeOneHourRadio = CreateRadioButton("&1 hour", 5);
+        _awakeTwoHoursRadio = CreateRadioButton("&2 hours", 6);
+        _awakeFourHoursRadio = CreateRadioButton("&4 hours", 7);
+        _awakeUntilOffRadio = CreateRadioButton("Until turned o&ff", 8);
+        durationPanel.Controls.Add(_awakeThirtyMinutesRadio);
+        durationPanel.Controls.Add(_awakeOneHourRadio);
+        durationPanel.Controls.Add(_awakeTwoHoursRadio);
+        durationPanel.Controls.Add(_awakeFourHoursRadio);
+        durationPanel.Controls.Add(_awakeUntilOffRadio);
+        _awakeDurationGroup.Controls.Add(durationPanel);
+        awakeCard.AddRow(_awakeDurationGroup);
+
+        _applyAwakeButton = CreateButton("&Apply", (_, _) => ApplyAwakeSelection(), 95);
+        _applyAwakeButton.TabIndex = 9;
+        awakeCard.AddRow(_applyAwakeButton, stretch: false);
+
+        _awakeOffRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeSystemRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeSystemAndDisplayRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeThirtyMinutesRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeOneHourRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeTwoHoursRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeFourHoursRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+        _awakeUntilOffRadio.CheckedChanged += (_, _) => AwakeSelectionChanged();
+
+        var footer = new TableLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            ColumnCount = 3,
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0),
+            AccessibleRole = AccessibleRole.Grouping,
+            AccessibleName = "Popup actions"
+        };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         _updatedLabel = CreateLabel(string.Empty, 8, FontStyle.Regular);
+        _updatedLabel.AccessibleName = "Last update time";
         footer.Controls.Add(_updatedLabel, 0, 0);
-        footer.Controls.Add(CreateButton("Settings", (_, _) => OpenSettings(), 105), 1, 0);
-        footer.Controls.Add(CreateButton("Exit", (_, _) => _exit(), 60), 2, 0);
+        var settingsButton = CreateButton("Settin&gs", (_, _) => OpenSettings(), 105);
+        settingsButton.TabIndex = 10;
+        footer.Controls.Add(settingsButton, 1, 0);
+        var exitButton = CreateButton("E&xit", (_, _) => _exit(), 68);
+        exitButton.TabIndex = 11;
+        footer.Controls.Add(exitButton, 2, 0);
         _content.AddRow(footer);
+
+        _relativeTimeTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
+        _relativeTimeTimer.Tick += (_, _) => UpdateTimeLabels(DateTimeOffset.UtcNow);
 
 #if DEBUG
         _layoutInspector = new LayoutInspectorOverlay(this);
@@ -163,10 +254,39 @@ public sealed class StatusPopupForm : Form
         };
 #endif
 
-        Resize += (_, _) => UpdateRoundedRegion();
-        HandleCreated += (_, _) => UpdateRoundedRegion();
-        DpiChanged += (_, _) => UpdateRoundedRegion();
-        Shown += (_, _) => PositionNearCursor();
+        Resize += (_, _) =>
+        {
+            UpdateResponsiveLayout();
+            UpdateRoundedRegion();
+        };
+        HandleCreated += (_, _) =>
+        {
+            UpdateResponsiveLayout();
+            UpdateRoundedRegion();
+        };
+        DpiChanged += (_, _) =>
+        {
+            UpdateResponsiveLayout();
+            UpdateRoundedRegion();
+            PositionNearCursor();
+        };
+        Shown += (_, _) =>
+        {
+            PositionNearCursor();
+            StartRelativeTimeTimer();
+            BeginInvoke(FocusFirstControl);
+        };
+        VisibleChanged += (_, _) =>
+        {
+            if (Visible)
+            {
+                StartRelativeTimeTimer();
+            }
+            else
+            {
+                StopRelativeTimeTimer();
+            }
+        };
         KeyDown += (_, args) =>
         {
 #if DEBUG
@@ -191,17 +311,186 @@ public sealed class StatusPopupForm : Form
                 return;
             }
 #endif
+            if (Form.ActiveForm is { } activeForm && activeForm != this && activeForm.Visible)
+            {
+                return;
+            }
+
             Hide();
         };
 
+        SyncAwakeControls(initialSnapshot.Awake);
         UpdateSnapshot(initialSnapshot);
         ApplyTheme();
+    }
+
+    private static FlowLayoutPanel CreateRadioPanel() => new()
+    {
+        AutoSize = true,
+        Dock = DockStyle.Fill,
+        FlowDirection = FlowDirection.LeftToRight,
+        WrapContents = true,
+        Margin = new Padding(0),
+        Padding = new Padding(0)
+    };
+
+    private static RadioButton CreateRadioButton(string text, int tabIndex) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        MinimumSize = new Size(92, 30),
+        Margin = new Padding(0, 0, LayoutMetrics.Medium, LayoutMetrics.XSmall),
+        TabIndex = tabIndex,
+        AccessibleName = text.Replace("&", string.Empty, StringComparison.Ordinal),
+        UseVisualStyleBackColor = true
+    };
+
+    private async Task RefreshClickedAsync()
+    {
+        if (_refreshInProgress || IsDisposed)
+        {
+            return;
+        }
+
+        _refreshInProgress = true;
+        SetRefreshBusy(true);
+        SetLiveStatus("Refreshing provider data.");
+        try
+        {
+            var result = await _refresh().ConfigureAwait(true);
+            SetLiveStatus(string.IsNullOrWhiteSpace(result.Message)
+                ? result.Succeeded ? "Updated just now." : "Refresh failed."
+                : result.Message);
+        }
+        catch (Exception)
+        {
+            SetLiveStatus("Refresh failed. Showing the last available values.");
+        }
+        finally
+        {
+            _refreshInProgress = false;
+            SetRefreshBusy(false);
+        }
+    }
+
+    private void SetRefreshBusy(bool busy)
+    {
+        _refreshButton.Enabled = !busy;
+        _refreshButton.Text = busy ? "Refreshing…" : "&Refresh";
+        _refreshButton.AccessibleName = busy ? "Refreshing provider data" : "Refresh provider data";
+        _refreshButton.AccessibleDescription = busy
+            ? "Refresh is in progress."
+            : "Refresh all provider data.";
+    }
+
+    private void SetLiveStatus(string message)
+    {
+        _liveStatusLabel.Text = message;
+        _liveStatusLabel.AccessibleName = $"Status updates: {message}";
+        _liveStatusLabel.AccessibleDescription = message;
+        WindowsTheme.Apply(_liveStatusLabel);
     }
 
     private void OpenSettings()
     {
         Hide();
         _openSettings();
+    }
+
+    private void ApplyAwakeSelection()
+    {
+        var mode = _awakeOffRadio.Checked
+            ? AwakeMode.Off
+            : _awakeSystemAndDisplayRadio.Checked
+                ? AwakeMode.SystemAndDisplay
+                : AwakeMode.System;
+        TimeSpan? duration = mode == AwakeMode.Off
+            ? null
+            : _awakeThirtyMinutesRadio.Checked
+                ? TimeSpan.FromMinutes(30)
+                : _awakeOneHourRadio.Checked
+                    ? TimeSpan.FromHours(1)
+                    : _awakeTwoHoursRadio.Checked
+                        ? TimeSpan.FromHours(2)
+                        : _awakeFourHoursRadio.Checked
+                            ? TimeSpan.FromHours(4)
+                            : null;
+
+        try
+        {
+            _awakeSelectionDirty = false;
+            _setAwake(mode, duration);
+            SetLiveStatus(mode == AwakeMode.Off
+                ? "Keep-awake mode turned off."
+                : "Keep-awake mode applied.");
+        }
+        catch (Exception)
+        {
+            SyncAwakeControls(AwakeState.Off with
+            {
+                UserFacingError = "Windows could not enable keep-awake mode."
+            });
+            SetLiveStatus("Keep-awake mode could not be enabled.");
+        }
+    }
+
+    private void AwakeSelectionChanged()
+    {
+        if (_synchronizingAwakeSelection)
+        {
+            return;
+        }
+
+        _awakeSelectionDirty = true;
+        SetAwakeDurationEnabled(!_awakeOffRadio.Checked);
+    }
+
+    private void SyncAwakeControls(AwakeState state)
+    {
+        _synchronizingAwakeSelection = true;
+        try
+        {
+            _awakeOffRadio.Checked = state.Mode == AwakeMode.Off;
+            _awakeSystemRadio.Checked = state.Mode == AwakeMode.System;
+            _awakeSystemAndDisplayRadio.Checked = state.Mode == AwakeMode.SystemAndDisplay;
+
+            var duration = state.ExpiresAt is { } expiresAt && state.StartedAt is { } startedAt
+                ? expiresAt - startedAt
+                : (TimeSpan?)null;
+            _awakeThirtyMinutesRadio.Checked = IsDuration(duration, TimeSpan.FromMinutes(30));
+            _awakeOneHourRadio.Checked = IsDuration(duration, TimeSpan.FromHours(1));
+            _awakeTwoHoursRadio.Checked = IsDuration(duration, TimeSpan.FromHours(2));
+            _awakeFourHoursRadio.Checked = IsDuration(duration, TimeSpan.FromHours(4));
+            _awakeUntilOffRadio.Checked = duration is null ||
+                (!_awakeThirtyMinutesRadio.Checked &&
+                 !_awakeOneHourRadio.Checked &&
+                 !_awakeTwoHoursRadio.Checked &&
+                 !_awakeFourHoursRadio.Checked);
+            SetAwakeDurationEnabled(state.Mode != AwakeMode.Off);
+            _awakeSelectionDirty = false;
+        }
+        finally
+        {
+            _synchronizingAwakeSelection = false;
+        }
+    }
+
+    private static bool IsDuration(TimeSpan? actual, TimeSpan expected) =>
+        actual is { } value && Math.Abs((value - expected).TotalSeconds) < 1;
+
+    private void SetAwakeDurationEnabled(bool enabled)
+    {
+        _awakeDurationGroup.Enabled = true;
+        _awakeDurationGroup.AccessibleDescription = enabled
+            ? "Select how long Windows should stay awake."
+            : "Choose System or System and display mode to select a duration.";
+
+        _awakeThirtyMinutesRadio.Enabled = enabled;
+        _awakeOneHourRadio.Enabled = enabled;
+        _awakeTwoHoursRadio.Enabled = enabled;
+        _awakeFourHoursRadio.Enabled = enabled;
+        _awakeUntilOffRadio.Enabled = enabled;
+        WindowsTheme.Apply(_awakeDurationGroup);
     }
 
     public void ShowPopup()
@@ -212,7 +501,9 @@ public sealed class StatusPopupForm : Form
         }
 
         ApplyTheme();
+        SyncAwakeControls(_snapshot.Awake);
         _content.AutoScrollPosition = Point.Empty;
+        UpdateResponsiveLayout();
         PerformLayout();
         PositionNearCursor();
         if (!Visible)
@@ -226,17 +517,28 @@ public sealed class StatusPopupForm : Form
         PositionNearCursor();
         BringToFront();
         Activate();
+        StartRelativeTimeTimer();
+        BeginInvoke(FocusFirstControl);
     }
 
     public void ApplyTheme()
     {
         WindowsTheme.Apply(this);
+        UpdateRoundedRegion();
         Invalidate(true);
+    }
+
+    public void FocusFirstControl()
+    {
+        if (!IsDisposed && Visible && _refreshButton.CanFocus)
+        {
+            _refreshButton.Focus();
+        }
     }
 
     public void UpdateSnapshot(AppSnapshot snapshot)
     {
-        if (IsDisposed || (_hasRenderedSnapshot && ReferenceEquals(_snapshot, snapshot)))
+        if (IsDisposed)
         {
             return;
         }
@@ -245,10 +547,17 @@ public sealed class StatusPopupForm : Form
         _snapshot = snapshot;
         _hasRenderedSnapshot = true;
         var view = new StatusViewModel(snapshot, DateTimeOffset.UtcNow);
+
         _codexHealthIndicator.SetHealth(snapshot.CodexRateLimits.Health);
         _todayTokensLabel.Text = $"Today  {StatusViewModel.FormatTokens(snapshot.CodexTokenUsage.Value?.GetTokensForDate(DateOnly.FromDateTime(DateTime.Now)))} tokens";
+        _todayTokensLabel.AccessibleDescription = _todayTokensLabel.Text;
         _lifetimeTokensLabel.Text = $"Lifetime  {StatusViewModel.FormatTokens(snapshot.CodexTokenUsage.Value?.LifetimeTokens)} tokens";
+        _lifetimeTokensLabel.AccessibleDescription = _lifetimeTokensLabel.Text;
         _codexErrorLabel.Text = snapshot.CodexRateLimits.UserFacingError ?? snapshot.CodexAccount.UserFacingError ?? string.Empty;
+        _codexErrorLabel.AccessibleName = string.IsNullOrWhiteSpace(_codexErrorLabel.Text)
+            ? "Codex error details"
+            : $"Codex error: {_codexErrorLabel.Text}";
+        _codexErrorLabel.AccessibleDescription = _codexErrorLabel.Text;
         _codexErrorLabel.Visible = !string.IsNullOrWhiteSpace(_codexErrorLabel.Text);
         if (previous is null || !Equals(previous.CodexRateLimits, snapshot.CodexRateLimits))
         {
@@ -260,15 +569,49 @@ public sealed class StatusPopupForm : Form
         {
             UpdateOpenCodeQuotaRows(snapshot, view.Now);
         }
-        _openCodeQuotaErrorLabel.Text = snapshot.OpenCodeGoQuota.UserFacingError ?? string.Empty;
+
+        _openCodeQuotaErrorLabel.Text = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured
+            ? "OpenCode Go quota requires an API key."
+            : snapshot.OpenCodeGoQuota.UserFacingError ?? string.Empty;
+        _openCodeQuotaErrorLabel.AccessibleName = string.IsNullOrWhiteSpace(_openCodeQuotaErrorLabel.Text)
+            ? "OpenCode Go error details"
+            : $"OpenCode Go error: {_openCodeQuotaErrorLabel.Text}";
+        _openCodeQuotaErrorLabel.AccessibleDescription = _openCodeQuotaErrorLabel.Text;
         _openCodeQuotaErrorLabel.Tag = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured ? "muted" : "error";
         _openCodeQuotaErrorLabel.Visible = !string.IsNullOrWhiteSpace(_openCodeQuotaErrorLabel.Text);
+        _openCodeSettingsButton.Visible = snapshot.OpenCodeGoQuota.Health == ProviderHealth.NotConfigured;
         WindowsTheme.Apply(_openCodeQuotaErrorLabel);
 
         _awakeLabel.Text = view.AwakeSummary;
         _awakeLabel.Tag = snapshot.Awake.UserFacingError is null ? null : "error";
         WindowsTheme.Apply(_awakeLabel);
-        _updatedLabel.Text = $"Updated {FormatAge(snapshot.CapturedAt, view.Now)}";
+        if (previous is null || !Equals(previous.Awake, snapshot.Awake))
+        {
+            if (!_awakeSelectionDirty || snapshot.Awake.UserFacingError is not null)
+            {
+                SyncAwakeControls(snapshot.Awake);
+            }
+        }
+
+        if (previous is not null)
+        {
+            if (previous.CodexRateLimits.Health != snapshot.CodexRateLimits.Health)
+            {
+                SetLiveStatus($"Codex status: {StatusViewModel.DescribeHealth(snapshot.CodexRateLimits.Health)}.");
+            }
+            else if (previous.OpenCodeGoQuota.Health != snapshot.OpenCodeGoQuota.Health)
+            {
+                SetLiveStatus($"OpenCode Go status: {StatusViewModel.DescribeHealth(snapshot.OpenCodeGoQuota.Health)}.");
+            }
+            else if (snapshot.Awake.UserFacingError is not null &&
+                     previous.Awake.UserFacingError != snapshot.Awake.UserFacingError)
+            {
+                SetLiveStatus(snapshot.Awake.UserFacingError);
+            }
+        }
+
+        UpdateTimeLabels(view.Now);
+        UpdateResponsiveLayout();
     }
 
     private void UpdateOpenCodeQuotaRows(AppSnapshot snapshot, DateTimeOffset now)
@@ -335,7 +678,7 @@ public sealed class StatusPopupForm : Form
         if (!string.IsNullOrWhiteSpace(bucket.DisplayName) &&
             !string.Equals(bucket.DisplayName, "codex", StringComparison.OrdinalIgnoreCase))
         {
-            title = $"{bucket.DisplayName} · {title}";
+            title = $"{bucket.DisplayName} - {title}";
         }
 
         var view = new QuotaUsageView(
@@ -350,6 +693,7 @@ public sealed class StatusPopupForm : Form
     {
         var label = CreateLabel(text, 10, FontStyle.Bold, new Padding(0, 0, 0, LayoutMetrics.XSmall));
         label.Tag = "accent";
+        label.AccessibleName = text;
         target.AddRow(label);
     }
 
@@ -360,23 +704,26 @@ public sealed class StatusPopupForm : Form
     {
         var label = CreateLabel(text, 10, FontStyle.Bold);
         label.Tag = "accent";
+        label.AccessibleName = text;
         label.Margin = new Padding(0, 1, 0, 0);
-        var headerHeight = Math.Max(24, label.PreferredHeight + 2);
         var header = new FlowLayoutPanel
         {
-            Height = headerHeight,
+            AutoSize = true,
+            Dock = DockStyle.Top,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
+            WrapContents = true,
             Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall),
-            Padding = new Padding(0)
+            Padding = new Padding(0),
+            AccessibleRole = AccessibleRole.Grouping,
+            AccessibleName = $"{text} provider status"
         };
         var icon = new ProviderIcon(iconKind)
         {
-            Margin = new Padding(0, Math.Max(0, (headerHeight - 22) / 2), 6, 0)
+            Margin = new Padding(0, 0, 6, 0)
         };
-        var health = new ProviderHealthIndicator
+        var health = new ProviderHealthIndicator(text)
         {
-            Margin = new Padding(6, Math.Max(0, (headerHeight - 18) / 2), 0, 0)
+            Margin = new Padding(6, 0, 0, 0)
         };
         header.Controls.Add(icon);
         header.Controls.Add(label);
@@ -385,14 +732,11 @@ public sealed class StatusPopupForm : Form
         return health;
     }
 
-    private static VerticalStackLayout CreateLimitsPanel()
+    private static VerticalStackLayout CreateLimitsPanel() => new()
     {
-        return new VerticalStackLayout
-        {
-            Margin = new Padding(0, LayoutMetrics.XSmall, 0, LayoutMetrics.XSmall),
-            Padding = new Padding(0)
-        };
-    }
+        Margin = new Padding(0, LayoutMetrics.XSmall, 0, LayoutMetrics.XSmall),
+        Padding = new Padding(0)
+    };
 
     private static string FormatLimitName(TimeSpan? duration, string fallbackName)
     {
@@ -450,56 +794,118 @@ public sealed class StatusPopupForm : Form
         float size,
         FontStyle style,
         Padding? margin = null,
-        string fontFamily = "Segoe UI")
-    {
-        return new Label
+        string fontFamily = "Segoe UI") => new()
         {
             Text = text,
             AutoSize = true,
-            MaximumSize = new Size(382, 0),
             Font = new Font(fontFamily, size, style),
             Margin = margin ?? new Padding(0),
-            Padding = new Padding(0)
+            Padding = new Padding(0),
+            TabStop = false
         };
-    }
 
-    private static Label CreateErrorLabel()
+    private static Label CreateErrorLabel(string accessibleName)
     {
         var label = CreateLabel(string.Empty, 8, FontStyle.Italic);
         label.Tag = "error";
-        label.ForeColor = Color.FromArgb(171, 48, 48);
+        label.AccessibleName = accessibleName;
+        label.MaximumSize = new Size(0, 0);
         return label;
     }
 
-    private static Button CreateButton(string text, EventHandler click, int width = 100)
+    private static Button CreateButton(string text, EventHandler click, int minimumWidth = 100)
     {
+        var name = text.Replace("&", string.Empty, StringComparison.Ordinal);
         var button = new Button
         {
             Text = text,
-            Width = width,
-            Height = Math.Max(36, TextRenderer.MeasureText(text, Control.DefaultFont).Height + 12),
-            AutoSize = false,
+            MinimumSize = new Size(minimumWidth, 36),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
             Margin = new Padding(0, 0, LayoutMetrics.Small, 0),
-            UseVisualStyleBackColor = true
+            UseVisualStyleBackColor = true,
+            AccessibleRole = AccessibleRole.PushButton,
+            AccessibleName = name,
+            TabStop = true
         };
         button.Click += click;
         return button;
     }
 
+    private void UpdateTimeLabels(DateTimeOffset now)
+    {
+        var view = new StatusViewModel(_snapshot, now);
+        _updatedLabel.Text = $"Updated {FormatAge(_snapshot.CapturedAt, now)}";
+        _updatedLabel.AccessibleDescription = _updatedLabel.Text;
+        _awakeLabel.Text = view.AwakeSummary;
+        _awakeLabel.AccessibleDescription = view.AwakeSummary;
+        _awakeLabel.Tag = _snapshot.Awake.UserFacingError is null ? null : "error";
+        WindowsTheme.Apply(_updatedLabel);
+        WindowsTheme.Apply(_awakeLabel);
+    }
+
+    private void StartRelativeTimeTimer()
+    {
+        if (IsDisposed || !Visible)
+        {
+            return;
+        }
+
+        UpdateTimeLabels(DateTimeOffset.UtcNow);
+        _relativeTimeTimer.Start();
+    }
+
+    private void StopRelativeTimeTimer() => _relativeTimeTimer.Stop();
+
+    private void UpdateResponsiveLayout()
+    {
+        if (ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var maximumWidth = Math.Max(180, ClientSize.Width - Padding.Horizontal - LayoutMetrics.Large * 2);
+        foreach (var control in Descendants(this))
+        {
+            if (control is Label label &&
+                (label.Tag is "error" || label.AccessibleRole == AccessibleRole.StatusBar))
+            {
+                label.MaximumSize = new Size(maximumWidth, 0);
+            }
+        }
+    }
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     private void PositionNearCursor()
     {
         var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var maximumHeight = Math.Max(200, workingArea.Height - (ScreenEdgeGap * 2));
+        var maximumWidth = Math.Max(200, workingArea.Width - ScreenEdgeGap * 2);
+        var targetWidth = Math.Min(Math.Max(280, ScaleDimension(BasePopupWidth)), maximumWidth);
+        Width = targetWidth;
+        UpdateResponsiveLayout();
+        PerformLayout();
+
+        var maximumHeight = Math.Max(200, workingArea.Height - ScreenEdgeGap * 2);
         var measuredContentHeight = _content.Padding.Vertical
             + _content.Controls.Cast<Control>()
                 .Where(control => control.Visible)
-                .Sum(control => control.Height + control.Margin.Vertical)
+                .Sum(control => control.PreferredSize.Height + control.Margin.Vertical)
             + 2;
-        var contentHeight = Math.Max(
-            measuredContentHeight,
-            _content.PreferredSize.Height + Padding.Vertical);
+        var contentHeight = Math.Max(measuredContentHeight, _content.PreferredSize.Height + Padding.Vertical);
         _content.AutoScroll = contentHeight > maximumHeight;
-        Height = Math.Min(Math.Max(MinimumPopupHeight, contentHeight), maximumHeight);
+        Height = Math.Min(Math.Max(ScaleDimension(MinimumPopupHeight), contentHeight), maximumHeight);
+        PerformLayout();
 
         var left = workingArea.Left + ScreenEdgeGap;
         var right = workingArea.Right - ScreenEdgeGap;
@@ -510,17 +916,21 @@ public sealed class StatusPopupForm : Form
         Location = new Point(x, y);
     }
 
+    private int ScaleDimension(int value) => Math.Max(1, (int)Math.Round(value * DeviceDpi / 96d));
+
     private void UpdateRoundedRegion()
     {
-        if (ClientSize.Width <= 0 || ClientSize.Height <= 0)
+        var previousRegion = Region;
+        if (WindowsTheme.IsHighContrastEnabled || ClientSize.Width <= 0 || ClientSize.Height <= 0)
         {
+            Region = null;
+            previousRegion?.Dispose();
             return;
         }
 
         var radius = Math.Max(10, (int)Math.Round(12 * DeviceDpi / 96d));
         var bounds = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
         using var path = CreateRoundedRectangle(bounds, radius);
-        var previousRegion = Region;
         Region = new Region(path);
         previousRegion?.Dispose();
     }
@@ -546,6 +956,16 @@ public sealed class StatusPopupForm : Form
             parameters.ClassStyle |= dropShadow;
             return parameters;
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _relativeTimeTimer.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     private static string FormatAge(DateTimeOffset capturedAt, DateTimeOffset now)

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32;
 using TokenStatus.Core.Models;
 using TokenStatus.Infrastructure.Cli;
 
@@ -7,7 +8,9 @@ namespace TokenStatus.App.UI;
 public sealed class SettingsForm : Form
 {
     private readonly TextBox _codexPath;
-    private readonly TextBox _openCodeGoApiKey;
+    private PaddedTextBox _openCodeGoApiKey = null!;
+    private CheckBox _showOpenCodeGoApiKey = null!;
+    private Label _openCodeGoApiKeyState = null!;
     private readonly NumericUpDown _codexLimitsSeconds;
     private readonly NumericUpDown _codexUsageSeconds;
     private readonly NumericUpDown _openCodeSeconds;
@@ -18,8 +21,8 @@ public sealed class SettingsForm : Form
     private readonly bool _openCodeGoApiKeyConfigured;
     private readonly string _logDirectory;
     private readonly Button _saveButton;
-    private readonly Button _testOpenCodeGoApiKeyButton;
-    private readonly Button _clearOpenCodeGoApiKeyButton;
+    private Button _testOpenCodeGoApiKeyButton = null!;
+    private Button _clearOpenCodeGoApiKeyButton = null!;
     private readonly Button _cancelButton;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private bool _deleteOpenCodeGoApiKey;
@@ -39,38 +42,130 @@ public sealed class SettingsForm : Form
         _testOpenCodeGoApiKey = testOpenCodeGoApiKey;
         _openCodeGoApiKeyConfigured = openCodeGoApiKeyConfigured;
         _logDirectory = logDirectory;
-        Text = $"{AppBrand.DisplayName} settings";
-        Width = 720;
-        Height = 480;
-        MinimumSize = new Size(680, 460);
-        StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
 
-        var layout = new TableLayoutPanel
+        Text = $"{AppBrand.DisplayName} settings";
+        AccessibleName = $"{AppBrand.DisplayName} settings";
+        AccessibleDescription = "Configure providers, refresh intervals, notifications, startup, and diagnostics.";
+        AccessibleRole = AccessibleRole.Window;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Width = 760;
+        Height = 680;
+        MinimumSize = new Size(620, 520);
+        StartPosition = FormStartPosition.Manual;
+        KeyPreview = true;
+
+        var scroll = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(16),
-            ColumnCount = 3,
-            RowCount = 9,
-            AutoSize = false
+            AutoScroll = true,
+            Padding = new Padding(LayoutMetrics.Large),
+            AccessibleRole = AccessibleRole.Pane,
+            AccessibleName = "Settings content"
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 135));
-        for (var row = 0; row < layout.RowCount; row++)
+        var content = new TableLayoutPanel
         {
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        }
-        layout.RowStyles[0].Height = 62;
-        Controls.Add(layout);
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Dock = DockStyle.Top,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        scroll.Controls.Add(content);
+        Controls.Add(scroll);
 
-        _codexPath = new TextBox { Text = settings.CodexExecutablePath ?? string.Empty, Dock = DockStyle.Fill };
-        _openCodeGoApiKey = new TextBox
+        _codexPath = new PaddedTextBox
+        {
+            Text = settings.CodexExecutablePath ?? string.Empty,
+            Dock = DockStyle.Top,
+            AccessibleName = "Codex executable path",
+            AccessibleDescription = "Leave blank to detect the Codex executable automatically."
+        };
+        AddProviderSection(content);
+
+        _codexLimitsSeconds = CreateSecondsControl(
+            settings.CodexRateLimitRefreshSeconds,
+            AppSettings.MinimumProviderRefreshSeconds,
+            "Codex quota refresh interval");
+        _codexUsageSeconds = CreateSecondsControl(
+            settings.CodexUsageRefreshSeconds,
+            AppSettings.MinimumTokenUsageRefreshSeconds,
+            "Token activity refresh interval");
+        _openCodeSeconds = CreateSecondsControl(
+            settings.OpenCodeRefreshSeconds,
+            AppSettings.MinimumProviderRefreshSeconds,
+            "OpenCode Go quota refresh interval");
+        AddRefreshSection(content);
+
+        _quotaNotifications = new CheckBox
+        {
+            Text = "Notify at 25% and 5% remaining, and when quota resets",
+            Checked = settings.QuotaNotificationsEnabled,
+            AutoSize = true,
+            AccessibleName = "Quota notifications"
+        };
+        _startWithWindows = new CheckBox
+        {
+            Text = "Start with Windows",
+            Checked = settings.StartWithWindows,
+            AutoSize = true,
+            AccessibleName = "Start with Windows"
+        };
+        AddNotificationsSection(content);
+        AddDiagnosticsSection(content);
+
+        var buttons = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = new Padding(0, LayoutMetrics.Medium, 0, 0),
+            AccessibleRole = AccessibleRole.Grouping,
+            AccessibleName = "Settings actions"
+        };
+        _cancelButton = CreateButton("&Cancel", 95);
+        _cancelButton.DialogResult = DialogResult.Cancel;
+        _cancelButton.TabIndex = 30;
+        _saveButton = CreateButton("&Save", 95);
+        _saveButton.TabIndex = 31;
+        _saveButton.Click += SaveClicked;
+        buttons.Controls.Add(_cancelButton);
+        buttons.Controls.Add(_saveButton);
+        content.Controls.Add(buttons);
+
+        AcceptButton = _saveButton;
+        CancelButton = _cancelButton;
+        SystemEvents.UserPreferenceChanged += UserPreferenceChanged;
+        Shown += (_, _) =>
+        {
+            WindowsTheme.Apply(this);
+            PositionOnInvokingMonitor();
+            _codexPath.Focus();
+        };
+        DpiChanged += (_, _) =>
+        {
+            WindowsTheme.Apply(this);
+            PositionOnInvokingMonitor();
+        };
+        WindowsTheme.Apply(this);
+    }
+
+    private void AddProviderSection(TableLayoutPanel content)
+    {
+        var section = CreateSection("&Providers");
+        var layout = CreateSectionLayout();
+        AddPathRow(layout, 0, "Codex executable path", _codexPath);
+
+        _openCodeGoApiKey = new PaddedTextBox
         {
             Dock = DockStyle.Fill,
             UseSystemPasswordChar = true,
-            PlaceholderText = openCodeGoApiKeyConfigured
-                ? "Configured — leave blank to keep"
+            AccessibleName = "OpenCode Go API key",
+            AccessibleDescription = "The API key is stored in Windows Credential Manager and is masked by default.",
+            PlaceholderText = _openCodeGoApiKeyConfigured
+                ? "Configured - leave blank to keep"
                 : "Paste OpenCode Go API key"
         };
         _openCodeGoApiKey.TextChanged += (_, _) =>
@@ -79,60 +174,146 @@ public sealed class SettingsForm : Form
             {
                 _deleteOpenCodeGoApiKey = false;
             }
-        };
-        _codexLimitsSeconds = CreateSecondsControl(settings.CodexRateLimitRefreshSeconds, AppSettings.MinimumProviderRefreshSeconds);
-        _codexUsageSeconds = CreateSecondsControl(settings.CodexUsageRefreshSeconds, AppSettings.MinimumTokenUsageRefreshSeconds);
-        _openCodeSeconds = CreateSecondsControl(settings.OpenCodeRefreshSeconds, AppSettings.MinimumProviderRefreshSeconds);
-        _quotaNotifications = new CheckBox
-        {
-            Text = "Notify at 25% and 5% left, and when quota resets",
-            Checked = settings.QuotaNotificationsEnabled,
-            AutoSize = true
-        };
-        _startWithWindows = new CheckBox { Text = "Start with Windows", Checked = settings.StartWithWindows, AutoSize = true };
 
-        AddPathRow(layout, 0, "Codex executable", _codexPath, () => ExecutableResolver.ResolveCodex(null));
-        layout.Controls.Add(CreateFieldLabel("OpenCode Go API key"), 0, 1);
+            UpdateOpenCodeGoApiKeyState();
+        };
+        AddFieldLabel(layout, 1, "OpenCode Go API key");
         layout.Controls.Add(_openCodeGoApiKey, 1, 1);
-        var keyButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
-        _testOpenCodeGoApiKeyButton = CreateButton("Test", 58);
+        var keyButtons = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        _testOpenCodeGoApiKeyButton = CreateButton("&Test", 64);
+        _testOpenCodeGoApiKeyButton.TabIndex = 6;
         _testOpenCodeGoApiKeyButton.Click += TestOpenCodeGoApiKeyClicked;
-        _clearOpenCodeGoApiKeyButton = CreateButton("Clear", 58);
+        _clearOpenCodeGoApiKeyButton = CreateButton("Clear", 64);
+        _clearOpenCodeGoApiKeyButton.TabIndex = 7;
         _clearOpenCodeGoApiKeyButton.Click += (_, _) => MarkOpenCodeGoApiKeyForDeletion();
         keyButtons.Controls.Add(_testOpenCodeGoApiKeyButton);
         keyButtons.Controls.Add(_clearOpenCodeGoApiKeyButton);
         layout.Controls.Add(keyButtons, 2, 1);
-        AddSecondsRow(layout, 2, "Codex quota refresh", _codexLimitsSeconds);
-        AddSecondsRow(layout, 3, "Token activity refresh", _codexUsageSeconds);
-        AddSecondsRow(layout, 4, "OpenCode quota refresh", _openCodeSeconds);
-        layout.Controls.Add(_quotaNotifications, 1, 5);
-        layout.Controls.Add(_startWithWindows, 1, 6);
 
-        var logButton = CreateButton("Open log folder", 150);
+        _showOpenCodeGoApiKey = new CheckBox
+        {
+            Text = "Show API key",
+            AutoSize = true,
+            AccessibleName = "Show OpenCode Go API key",
+            AccessibleDescription = "Toggle whether the API key text is visible.",
+            TabIndex = 8
+        };
+        _showOpenCodeGoApiKey.CheckedChanged += (_, _) =>
+            _openCodeGoApiKey.UseSystemPasswordChar = !_showOpenCodeGoApiKey.Checked;
+        layout.Controls.Add(_showOpenCodeGoApiKey, 1, 2);
+
+        _openCodeGoApiKeyState = new Label
+        {
+            AutoSize = true,
+            Text = string.Empty,
+            Tag = "muted",
+            AccessibleName = "OpenCode Go API key status",
+            TabStop = false,
+            Margin = new Padding(0, 0, 0, LayoutMetrics.XSmall)
+        };
+        layout.Controls.Add(_openCodeGoApiKeyState, 1, 3);
+
+        section.Controls.Add(layout);
+        content.Controls.Add(section);
+        UpdateOpenCodeGoApiKeyState();
+    }
+
+    private void AddRefreshSection(TableLayoutPanel content)
+    {
+        var section = CreateSection("&Refresh intervals");
+        var layout = CreateSectionLayout();
+        AddSecondsRow(layout, 0, "Codex quota refresh interval", _codexLimitsSeconds);
+        AddSecondsRow(layout, 1, "Token activity refresh interval", _codexUsageSeconds);
+        AddSecondsRow(layout, 2, "OpenCode Go quota refresh interval", _openCodeSeconds);
+        section.Controls.Add(layout);
+        content.Controls.Add(section);
+    }
+
+    private void AddNotificationsSection(TableLayoutPanel content)
+    {
+        var section = CreateSection("&Notifications and startup");
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        panel.Controls.Add(_quotaNotifications);
+        panel.Controls.Add(_startWithWindows);
+        section.Controls.Add(panel);
+        content.Controls.Add(section);
+    }
+
+    private void AddDiagnosticsSection(TableLayoutPanel content)
+    {
+        var section = CreateSection("&Diagnostics");
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0),
+            Margin = new Padding(0)
+        };
+        var logButton = CreateButton("&Open log folder", 150);
         logButton.Enabled = !string.IsNullOrWhiteSpace(_logDirectory);
         logButton.AccessibleDescription = logButton.Enabled
             ? _logDirectory
             : "File logging is unavailable.";
         logButton.Click += (_, _) => OpenLogFolder();
-        layout.Controls.Add(logButton, 1, 7);
-
-        var buttons = new FlowLayoutPanel
+        panel.Controls.Add(logButton);
+        var help = new Label
         {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false
+            AutoSize = true,
+            MaximumSize = new Size(660, 0),
+            Text = "Logs contain redacted diagnostics and never contain provider credentials.",
+            Tag = "muted",
+            AccessibleName = "Diagnostics help"
         };
-        _cancelButton = CreateButton("Cancel", 95);
-        _cancelButton.DialogResult = DialogResult.Cancel;
-        _saveButton = CreateButton("Save", 95);
-        _saveButton.Click += SaveClicked;
-        buttons.Controls.Add(_cancelButton);
-        buttons.Controls.Add(_saveButton);
-        layout.Controls.Add(buttons, 1, 8);
-        AcceptButton = _saveButton;
-        CancelButton = _cancelButton;
-        WindowsTheme.Apply(this);
-        Shown += (_, _) => WindowsTheme.Apply(this);
+        panel.Controls.Add(help);
+        section.Controls.Add(panel);
+        content.Controls.Add(section);
+    }
+
+    private static GroupBox CreateSection(string title) => new()
+    {
+        Text = title,
+        AutoSize = true,
+        Dock = DockStyle.Top,
+        Padding = new Padding(LayoutMetrics.Medium, LayoutMetrics.Large, LayoutMetrics.Medium, LayoutMetrics.Small),
+        Margin = new Padding(0, 0, 0, LayoutMetrics.Medium),
+        AccessibleName = title.Replace("&", string.Empty, StringComparison.Ordinal)
+    };
+
+    private static TableLayoutPanel CreateSectionLayout() => new()
+    {
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        Dock = DockStyle.Top,
+        ColumnCount = 3,
+        GrowStyle = TableLayoutPanelGrowStyle.AddRows,
+        Margin = new Padding(0),
+        Padding = new Padding(0)
+    };
+
+    private static void ConfigureSectionColumns(TableLayoutPanel layout)
+    {
+        if (layout.ColumnStyles.Count == 0)
+        {
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+        }
     }
 
     private void TestOpenCodeGoApiKeyClicked(object? sender, EventArgs e)
@@ -158,6 +339,7 @@ public sealed class SettingsForm : Form
                 AppBrand.DisplayName,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
+            _openCodeGoApiKey.Focus();
             return;
         }
 
@@ -219,55 +401,98 @@ public sealed class SettingsForm : Form
         _openCodeGoApiKey.Clear();
         _deleteOpenCodeGoApiKey = true;
         _openCodeGoApiKey.PlaceholderText = "Will be removed when settings are saved";
+        UpdateOpenCodeGoApiKeyState();
     }
 
-    private static NumericUpDown CreateSecondsControl(int value, int minimum)
+    private void UpdateOpenCodeGoApiKeyState()
     {
-        return new NumericUpDown
+        if (_openCodeGoApiKeyState is null)
+        {
+            return;
+        }
+
+        _openCodeGoApiKeyState.Text = _deleteOpenCodeGoApiKey
+            ? "Will be removed when settings are saved"
+            : !string.IsNullOrWhiteSpace(_openCodeGoApiKey.Text) || _openCodeGoApiKeyConfigured
+                ? "Configured"
+                : "Not configured";
+        _openCodeGoApiKeyState.AccessibleDescription = _openCodeGoApiKeyState.Text;
+        WindowsTheme.Apply(_openCodeGoApiKeyState);
+    }
+
+    private static NumericUpDown CreateSecondsControl(int value, int minimum, string accessibleName)
+    {
+        return new PaddedNumericUpDown
         {
             Minimum = minimum,
             Maximum = 86400,
             Increment = 30,
             Value = Math.Clamp(value, minimum, 86400),
             Dock = DockStyle.Left,
-            Width = 120
+            Width = 120,
+            AccessibleName = accessibleName,
+            AccessibleDescription = "Enter a refresh interval in seconds."
         };
     }
 
-    private void AddPathRow(TableLayoutPanel layout, int row, string label, TextBox textBox, Func<string?> resolve)
+    private void AddPathRow(TableLayoutPanel layout, int row, string label, TextBox textBox)
     {
-        layout.Controls.Add(CreateFieldLabel(label), 0, row);
-        var pathPanel = new Panel { Dock = DockStyle.Fill };
+        AddFieldLabel(layout, row, label);
+        var pathPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0),
+            Padding = new Padding(0),
+            AccessibleRole = AccessibleRole.Pane,
+            AccessibleName = "Codex executable path and resolution"
+        };
+        pathPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pathPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        pathPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var resolutionLabel = new Label
         {
             AutoSize = false,
-            Dock = DockStyle.Bottom,
-            Height = 18,
+            Dock = DockStyle.Fill,
+            MinimumSize = new Size(0, 24),
             AutoEllipsis = true,
-            AccessibleName = "Codex executable resolution"
+            AccessibleName = "Codex executable resolution",
+            Tag = "muted",
+            Margin = new Padding(0, LayoutMetrics.XSmall, 0, 0),
+            TextAlign = ContentAlignment.MiddleLeft
         };
         void UpdateResolutionLabel()
         {
             var resolution = ExecutableResolver.ResolveCodexWithProvenance(textBox.Text);
             resolutionLabel.Text = resolution is null
-                ? "Automatic resolution: executable not found"
-                : $"{resolution.ProvenanceLabel}: {resolution.Path}";
+                ? "Automatic resolution: executable not found. Leave blank to auto-detect."
+                : $"{resolution.ProvenanceLabel}: {resolution.Path} (blank uses automatic detection)";
             resolutionLabel.AccessibleDescription = resolutionLabel.Text;
         }
 
         textBox.Dock = DockStyle.Fill;
+        textBox.Margin = new Padding(0);
+        textBox.TabIndex = 1;
         textBox.TextChanged += (_, _) => UpdateResolutionLabel();
-        pathPanel.Controls.Add(resolutionLabel);
-        pathPanel.Controls.Add(textBox);
+        pathPanel.Controls.Add(textBox, 0, 0);
+        pathPanel.Controls.Add(resolutionLabel, 0, 1);
         layout.Controls.Add(pathPanel, 1, row);
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
-        var auto = CreateButton("Auto", 58);
-        auto.Click += (_, _) =>
+        var buttons = new FlowLayoutPanel
         {
-            textBox.Text = resolve() ?? string.Empty;
-            UpdateResolutionLabel();
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight
         };
+        var auto = CreateButton("Auto", 58);
+        auto.TabIndex = 2;
+        auto.AccessibleDescription = "Clear the path and use automatic Codex detection.";
+        auto.Click += (_, _) => textBox.Clear();
         var test = CreateButton("Test", 58);
+        test.TabIndex = 3;
         test.Click += (_, _) => TestPath(textBox.Text, label);
         buttons.Controls.Add(auto);
         buttons.Controls.Add(test);
@@ -277,31 +502,64 @@ public sealed class SettingsForm : Form
 
     private static void AddSecondsRow(TableLayoutPanel layout, int row, string label, NumericUpDown control)
     {
-        layout.Controls.Add(CreateFieldLabel(label), 0, row);
-        layout.Controls.Add(control, 1, row);
+        AddFieldLabel(layout, row, label);
+        var valuePanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        valuePanel.Controls.Add(control);
+        valuePanel.Controls.Add(new Label
+        {
+            Text = "seconds",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(LayoutMetrics.Small, 7, 0, 0),
+            AccessibleName = "Units: seconds",
+            TabStop = false
+        });
+        layout.Controls.Add(valuePanel, 1, row);
+        ConfigureSectionColumns(layout);
     }
 
-    private static Label CreateFieldLabel(string text)
+    private static void AddFieldLabel(TableLayoutPanel layout, int row, string text)
     {
-        return new Label
+        var label = new Label
         {
             Text = text,
-            AutoSize = false,
-            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
             TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = false
+            AccessibleName = text,
+            TabStop = false,
+            Margin = new Padding(0, 7, LayoutMetrics.Small, 7)
         };
+        layout.Controls.Add(label, 0, row);
+        ConfigureSectionColumns(layout);
+        while (layout.RowCount <= row)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowCount++;
+        }
     }
 
-    private static Button CreateButton(string text, int width)
+    private static Button CreateButton(string text, int minimumWidth)
     {
+        var name = text.Replace("&", string.Empty, StringComparison.Ordinal);
         return new Button
         {
             Text = text,
-            Width = width,
-            Height = Math.Max(34, TextRenderer.MeasureText(text, Control.DefaultFont).Height + 12),
-            AutoSize = false,
-            UseVisualStyleBackColor = true
+            MinimumSize = new Size(minimumWidth, 34),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
+            UseVisualStyleBackColor = true,
+            AccessibleRole = AccessibleRole.PushButton,
+            AccessibleName = name,
+            TabStop = true,
+            Padding = new Padding(LayoutMetrics.Small, 0, LayoutMetrics.Small, 0),
+            Margin = new Padding(0, 0, LayoutMetrics.Small, 0)
         };
     }
 
@@ -331,6 +589,7 @@ public sealed class SettingsForm : Form
         var codexPath = NormalizePath(_codexPath.Text, "Codex executable");
         if (codexPath is null && !string.IsNullOrWhiteSpace(_codexPath.Text))
         {
+            _codexPath.Focus();
             Interlocked.Exchange(ref _saveInProgress, 0);
             return;
         }
@@ -384,6 +643,7 @@ public sealed class SettingsForm : Form
         _testOpenCodeGoApiKeyButton.Enabled = !inProgress;
         _clearOpenCodeGoApiKeyButton.Enabled = !inProgress;
         _openCodeGoApiKey.Enabled = !inProgress;
+        _showOpenCodeGoApiKey.Enabled = !inProgress;
         _saveButton.Enabled = !inProgress;
     }
 
@@ -391,6 +651,7 @@ public sealed class SettingsForm : Form
     {
         _codexPath.Enabled = !inProgress;
         _openCodeGoApiKey.Enabled = !inProgress;
+        _showOpenCodeGoApiKey.Enabled = !inProgress;
         _codexLimitsSeconds.Enabled = !inProgress;
         _codexUsageSeconds.Enabled = !inProgress;
         _openCodeSeconds.Enabled = !inProgress;
@@ -450,6 +711,28 @@ public sealed class SettingsForm : Form
         }
     }
 
+    private void PositionOnInvokingMonitor()
+    {
+        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var x = workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2);
+        var y = workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2);
+        Location = new Point(x, y);
+    }
+
+    private void UserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.Color or
+            UserPreferenceCategory.General or
+            UserPreferenceCategory.VisualStyle or
+            UserPreferenceCategory.Accessibility)
+        {
+            if (!IsDisposed && IsHandleCreated)
+            {
+                BeginInvoke(new Action(() => WindowsTheme.Apply(this)));
+            }
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         if (Volatile.Read(ref _saveInProgress) != 0 && !_allowClose)
@@ -470,6 +753,7 @@ public sealed class SettingsForm : Form
     {
         if (disposing)
         {
+            SystemEvents.UserPreferenceChanged -= UserPreferenceChanged;
             if (Interlocked.Exchange(ref _lifetimeDisposed, 1) == 0)
             {
                 _lifetimeCancellation.Cancel();
