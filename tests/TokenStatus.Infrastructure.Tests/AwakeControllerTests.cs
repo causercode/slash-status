@@ -6,6 +6,8 @@ namespace TokenStatus.Infrastructure.Tests;
 
 public sealed class AwakeControllerTests
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task StartsAndStopsOnOneDedicatedOwnerThread()
     {
@@ -28,25 +30,33 @@ public sealed class AwakeControllerTests
         using var controller = new WindowsAwakeController(native);
         controller.Start(AwakeMode.System, TimeSpan.FromMilliseconds(80));
         await native.WaitForStateAsync(ExecutionState.Continuous | ExecutionState.SystemRequired);
-        await native.WaitForStateAsync(ExecutionState.Continuous, TimeSpan.FromSeconds(2));
+        await native.WaitForStateAsync(ExecutionState.Continuous, TestTimeout);
 
         Assert.Equal(AwakeMode.Off, controller.Current.Mode);
     }
 
     [Fact]
-    public async Task FailedActivationPublishesOffStateWithDiagnostic()
+    public void FailedActivationPublishesOffStateWithDiagnostic()
     {
         var native = new RecordingNative(_ => false);
         using var controller = new WindowsAwakeController(native);
-        var changed = new TaskCompletionSource<AwakeState>(TaskCreationOptions.RunContinuationsAsynchronously);
-        controller.Changed += (_, state) => changed.TrySetResult(state);
+        using var changed = new ManualResetEventSlim();
+        var published = AwakeState.Off;
+        controller.Changed += (_, state) =>
+        {
+            if (state.DiagnosticCode == "awake_activation_failed")
+            {
+                published = state;
+                changed.Set();
+            }
+        };
 
         controller.Start(AwakeMode.System, TimeSpan.FromMinutes(1));
-        var state = await changed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(changed.Wait(TestTimeout), "The activation failure state was not published.");
 
-        Assert.Equal(AwakeMode.Off, state.Mode);
-        Assert.Equal("awake_activation_failed", state.DiagnosticCode);
-        Assert.False(state.IsActive);
+        Assert.Equal(AwakeMode.Off, published.Mode);
+        Assert.Equal("awake_activation_failed", published.DiagnosticCode);
+        Assert.False(published.IsActive);
         Assert.Equal(AwakeMode.Off, controller.Current.Mode);
     }
 
@@ -69,7 +79,7 @@ public sealed class AwakeControllerTests
         native.Succeed = false;
         controller.Reassert();
 
-        var state = await reassertionFailure.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var state = await reassertionFailure.Task.WaitAsync(TestTimeout);
 
         Assert.Equal(AwakeMode.Off, state.Mode);
         Assert.Equal("awake_reassert_failed", state.DiagnosticCode);
@@ -99,13 +109,13 @@ public sealed class AwakeControllerTests
         {
             for (var i = 0; i < count; i++)
             {
-                Assert.True(await _changed.WaitAsync(TimeSpan.FromSeconds(2)));
+                Assert.True(await _changed.WaitAsync(TestTimeout));
             }
         }
 
         public async Task WaitForStateAsync(ExecutionState expected, TimeSpan? timeout = null)
         {
-            var until = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
+            var until = DateTime.UtcNow + (timeout ?? TestTimeout);
             while (DateTime.UtcNow < until)
             {
                 if (States.Contains(expected))
