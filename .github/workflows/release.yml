@@ -106,7 +106,7 @@ jobs:
           }
           .\scripts\Publish.ps1 @publishArguments
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TokenStatus-${{ github.ref_name }}-${{ matrix.runtime }}
           path: |
