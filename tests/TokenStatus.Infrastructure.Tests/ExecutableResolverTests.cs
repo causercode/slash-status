@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using TokenStatus.Infrastructure.Cli;
 
 namespace TokenStatus.Infrastructure.Tests;
@@ -69,6 +70,96 @@ public sealed class ExecutableResolverTests
         Assert.Equal(Path.GetFullPath(valid), result.Path);
     }
 
+    [Theory]
+    [InlineData(Architecture.X64, true)]
+    [InlineData(Architecture.X64, false)]
+    [InlineData(Architecture.Arm64, true)]
+    [InlineData(Architecture.Arm64, false)]
+    public void NpmInstallationIsResolvedForSupportedArchitectures(Architecture architecture, bool nested)
+    {
+        using var directory = new TemporaryDirectory();
+        directory.CreateFile("codex.cmd");
+        var expected = directory.CreateFile(GetNpmExecutablePath(architecture, nested));
+
+        var result = ExecutableResolver.ResolveCodexWithProvenance(
+            null,
+            directory.Combine("missing.exe"),
+            directory.FullPath,
+            architecture);
+
+        Assert.NotNull(result);
+        Assert.Equal(Path.GetFullPath(expected), result.Path);
+        Assert.Equal(ExecutableProvenance.NpmInstall, result.Provenance);
+        Assert.Equal("npm installation", result.ProvenanceLabel);
+    }
+
+    [Fact]
+    public void PowerShellShimCanAnchorNpmDiscovery()
+    {
+        using var directory = new TemporaryDirectory();
+        directory.CreateFile("codex.ps1");
+        var expected = directory.CreateFile(GetNpmExecutablePath(Architecture.X64, nested: true));
+
+        var result = ExecutableResolver.ResolveCodexWithProvenance(
+            null,
+            directory.Combine("missing.exe"),
+            directory.FullPath,
+            Architecture.X64);
+
+        Assert.NotNull(result);
+        Assert.Equal(Path.GetFullPath(expected), result.Path);
+    }
+
+    [Fact]
+    public void NpmShimIsNeverReturnedOrUsedWithoutExpectedNativeExecutable()
+    {
+        using var directory = new TemporaryDirectory();
+        var shim = directory.CreateFile("codex.cmd");
+        directory.CreateFile(Path.Combine("node_modules", "@openai", "codex.exe"));
+
+        var result = ExecutableResolver.ResolveCodexWithProvenance(
+            null,
+            directory.Combine("missing.exe"),
+            directory.FullPath,
+            Architecture.X64);
+
+        Assert.Null(result);
+        Assert.True(File.Exists(shim));
+    }
+
+    [Fact]
+    public void PathExecutableWinsOverNpmFallback()
+    {
+        using var directory = new TemporaryDirectory();
+        var expected = directory.CreateFile("codex.exe");
+        directory.CreateFile("codex.cmd");
+        directory.CreateFile(GetNpmExecutablePath(Architecture.X64, nested: true));
+
+        var result = ExecutableResolver.ResolveCodexWithProvenance(
+            null,
+            directory.Combine("missing.exe"),
+            directory.FullPath,
+            Architecture.X64);
+
+        Assert.NotNull(result);
+        Assert.Equal(Path.GetFullPath(expected), result.Path);
+        Assert.Equal(ExecutableProvenance.Path, result.Provenance);
+    }
+
+    private static string GetNpmExecutablePath(Architecture architecture, bool nested)
+    {
+        var (package, target) = architecture switch
+        {
+            Architecture.X64 => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+            Architecture.Arm64 => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+            _ => throw new ArgumentOutOfRangeException(nameof(architecture))
+        };
+        var packageRoot = nested
+            ? Path.Combine("node_modules", "@openai", "codex", "node_modules", "@openai", package)
+            : Path.Combine("node_modules", "@openai", package);
+        return Path.Combine(packageRoot, "vendor", target, "bin", "codex.exe");
+    }
+
     private sealed class TemporaryDirectory : IDisposable
     {
         public TemporaryDirectory()
@@ -83,6 +174,7 @@ public sealed class ExecutableResolverTests
         public string CreateFile(string name)
         {
             var path = Combine(name);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, string.Empty);
             return path;
         }
