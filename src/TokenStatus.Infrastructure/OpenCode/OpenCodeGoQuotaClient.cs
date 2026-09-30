@@ -16,15 +16,18 @@ public sealed class OpenCodeGoQuotaClient : IOpenCodeGoQuotaClient, IDisposable
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
     private readonly IRedactedLog? _log;
+    private readonly TimeSpan _requestTimeout;
     private int _disposed;
 
     public OpenCodeGoQuotaClient(
         IOpenCodeGoCredentialStore credentials,
         HttpClient? httpClient = null,
-        IRedactedLog? log = null)
+        IRedactedLog? log = null,
+        TimeSpan? requestTimeout = null)
     {
         _credentials = credentials;
         _log = log;
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(10);
         _ownsHttpClient = httpClient is null;
         _httpClient = httpClient ?? CreateHttpClient();
     }
@@ -45,6 +48,21 @@ public sealed class OpenCodeGoQuotaClient : IOpenCodeGoQuotaClient, IDisposable
     }
 
     public async Task<OpenCodeGoQuota> GetQuotaAsync(string apiKey, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_requestTimeout);
+        try
+        {
+            return await GetQuotaCoreAsync(apiKey, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ProviderFailureException(ProviderHealth.Stale,
+                "OpenCode Go usage check timed out. Try Refresh again.", "opencode_go_timeout", exception);
+        }
+    }
+
+    private async Task<OpenCodeGoQuota> GetQuotaCoreAsync(string apiKey, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
@@ -192,7 +210,7 @@ public static class OpenCodeGoQuotaParser
     {
         var window = RequiredObject(usage, name);
         if (!window.TryGetProperty("percent", out var percentElement) ||
-            !percentElement.TryGetDecimal(out var percent) ||
+            percentElement.ValueKind != JsonValueKind.Number || !percentElement.TryGetDecimal(out var percent) ||
             percent < 0)
         {
             throw new FormatException($"OpenCode quota window {name} has an invalid percent.");

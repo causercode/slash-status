@@ -75,6 +75,41 @@ public sealed class OpenCodeGoQuotaClientTests
     }
 
     [Fact]
+    public async Task TimeoutCoversResponseBodyAfterHeadersArrive()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new HangingStream())
+        });
+        using var httpClient = new HttpClient(handler);
+        using var client = new OpenCodeGoQuotaClient(new FakeCredentials("secret-key"), httpClient,
+            requestTimeout: TimeSpan.FromMilliseconds(50));
+        var failure = await Assert.ThrowsAsync<ProviderFailureException>(() =>
+            client.GetQuotaAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(ProviderHealth.Stale, failure.Health);
+        Assert.Equal("opencode_go_timeout", failure.DiagnosticCode);
+    }
+
+    private sealed class HangingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+        public override void Flush() => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public void ParserRejectsMissingWindows()
     {
         var malformed = Encoding.UTF8.GetBytes("{\"usage\":{\"rolling\":{}}}");

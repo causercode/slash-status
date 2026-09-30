@@ -11,10 +11,55 @@ internal static class Program
             return 2;
         }
 
+        if (args[0] == "--print") return RunClaude(args);
         return args[0].Equals("codex", StringComparison.OrdinalIgnoreCase) ||
                args[0].Equals("app-server", StringComparison.OrdinalIgnoreCase)
             ? RunCodex(args.Skip(1).ToArray())
             : 2;
+    }
+
+    private static int RunClaude(string[] options)
+    {
+        // A usage probe must disable behaviors and never send a user/model prompt.
+        if (!options.Contains("--no-session-persistence") ||
+            !options.Contains("{\"disableAllHooks\":true}") ||
+            !options.Contains("--strict-mcp-config") ||
+            !options.Contains("{\"mcpServers\":{}}") ||
+            !options.Contains("--disable-slash-commands") ||
+            !options.Contains("--no-chrome") ||
+            Array.IndexOf(options, "--tools") is var toolIndex &&
+            (toolIndex < 0 || options[toolIndex + 1] != "")) return 3;
+        string? line;
+        while ((line = Console.In.ReadLine()) is not null)
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.GetProperty("type").GetString() != "control_request") return 4;
+            var request = root.GetProperty("request");
+            var subtype = request.GetProperty("subtype").GetString();
+            object result;
+            if (subtype == "initialize") result = new { };
+            else if (subtype == "get_usage" && request.GetProperty("skip_behaviors").GetBoolean())
+            {
+                result = new
+                {
+                    rate_limits_available = true,
+                    rate_limits = new
+                    {
+                        five_hour = new { utilization = 24.2, resets_at = "2026-09-30T04:50:00Z" },
+                        seven_day = new { utilization = 76, resets_at = "2026-10-05T15:00:00Z" }
+                    }
+                };
+            }
+            else return 5;
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                type = "control_response",
+                response = new { subtype = "success", request_id = root.GetProperty("request_id"), response = result }
+            }));
+            Console.Out.Flush();
+        }
+        return 0;
     }
 
     private static int RunCodex(string[] options)

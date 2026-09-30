@@ -227,13 +227,8 @@ public sealed class CodexAppServerClient : ICodexUsageClient
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public async ValueTask DisconnectAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return;
-        }
-
         JsonLineRpcConnection? connection;
         lock (_gate)
         {
@@ -244,6 +239,14 @@ public sealed class CodexAppServerClient : ICodexUsageClient
         if (connection is not null)
         {
             await connection.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            await DisconnectAsync().ConfigureAwait(false);
         }
     }
 }

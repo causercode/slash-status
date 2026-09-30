@@ -9,6 +9,36 @@ namespace TokenStatus.App.Tests;
 public sealed class AccessibilityFormTests
 {
     [Fact]
+    public void ClaudeQuotaExposesAccessibleValuesAndCheckTime()
+    {
+        RunOnSta(() =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var snapshot = CreateSnapshot() with
+            {
+                ClaudeCodeQuota = new ProviderResult<ClaudeCodeQuota>(ProviderHealth.Stale,
+                    new ClaudeCodeQuota(now.AddHours(-1),
+                        new RateLimitWindow(24, TimeSpan.FromHours(5), now.AddHours(2)),
+                        new RateLimitWindow(88, TimeSpan.FromDays(7), now.AddDays(2))),
+                    now, now.AddHours(-1), "Last reported usage is stale.", "claude_usage_stale")
+            };
+            using var form = new StatusPopupForm(snapshot,
+                () => Task.FromResult(new RefreshOutcome(true, "Updated")), () => { }, (_, _) => { }, () => { });
+            form.CreateControl();
+            var progress = Descendants(form).OfType<ProgressBar>()
+                .Single(control => control.AccessibleName == "Claude 5-hour limit quota remaining");
+            Assert.Equal(76, progress.Value);
+            Assert.Equal(AccessibleRole.ProgressBar, progress.AccessibleRole);
+            var reported = Descendants(form).OfType<Label>()
+                .Single(control => control.AccessibleName == "Claude Code last usage check");
+            Assert.Contains("Checked", reported.Text);
+            Assert.Contains("through Claude Code", reported.Text);
+            Assert.Contains("Claude", StatusViewModel.BuildTooltip(snapshot));
+            Assert.True(StatusViewModel.BuildTooltip(snapshot).Length <= 63);
+        });
+    }
+
+    [Fact]
     public void PopupExposesIdentityNamedFocusableControlsAndProgressValues()
     {
         RunOnSta(() =>
@@ -102,7 +132,8 @@ public sealed class AccessibilityFormTests
             Assert.Contains("Refresh intervals", groups);
             Assert.Contains("Notifications and startup", groups);
             Assert.Contains("Diagnostics", groups);
-            Assert.Equal(3, Descendants(form).Count(control => control is Label label && label.Text == "seconds"));
+            Assert.Contains("Claude Code subscription", groups);
+            Assert.Equal(4, Descendants(form).Count(control => control is Label label && label.Text == "seconds"));
         });
     }
 

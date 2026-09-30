@@ -24,6 +24,10 @@ public sealed class StatusPopupForm : Form
     private readonly Label _todayTokensLabel;
     private readonly Label _lifetimeTokensLabel;
     private readonly Label _codexErrorLabel;
+    private readonly ProviderHealthIndicator _claudeHealthIndicator;
+    private readonly VerticalStackLayout _claudeLimitsPanel;
+    private readonly Label _claudeErrorLabel;
+    private readonly Label _claudeUpdatedLabel;
     private readonly ProviderHealthIndicator _openCodeHealthIndicator;
     private readonly VerticalStackLayout _openCodeLimitsPanel;
     private readonly Label _openCodeQuotaErrorLabel;
@@ -139,6 +143,18 @@ public sealed class StatusPopupForm : Form
         codexCard.AddRow(_todayTokensLabel);
         codexCard.AddRow(_lifetimeTokensLabel);
         codexCard.AddRow(_codexErrorLabel);
+
+        _claudeLimitsPanel = CreateLimitsPanel();
+        _claudeErrorLabel = CreateErrorLabel("Claude Code error details");
+        _claudeUpdatedLabel = CreateLabel(string.Empty, 8, FontStyle.Regular);
+        _claudeUpdatedLabel.AccessibleName = "Claude Code last usage check";
+        _claudeUpdatedLabel.Tag = "muted";
+        var claudeCard = new SectionCard { AccessibleName = "Claude Code provider" };
+        _content.AddRow(claudeCard);
+        _claudeHealthIndicator = AddProviderSectionHeader(claudeCard, "Claude Code");
+        claudeCard.AddRow(_claudeLimitsPanel);
+        claudeCard.AddRow(_claudeUpdatedLabel);
+        claudeCard.AddRow(_claudeErrorLabel);
 
         _openCodeLimitsPanel = CreateLimitsPanel();
         _openCodeQuotaErrorLabel = CreateErrorLabel("OpenCode Go error details");
@@ -564,6 +580,27 @@ public sealed class StatusPopupForm : Form
             UpdateRateLimitRows(snapshot, view.Now);
         }
 
+        _claudeHealthIndicator.SetHealth(snapshot.ClaudeCodeQuota.Health);
+        if (previous is null || !Equals(previous.ClaudeCodeQuota, snapshot.ClaudeCodeQuota))
+        {
+            _claudeLimitsPanel.ClearRows();
+            var quota = snapshot.ClaudeCodeQuota.Value;
+            if (quota?.FiveHour is { } fiveHour)
+                _claudeLimitsPanel.AddRow(new QuotaUsageView("Claude 5-hour limit", fiveHour.RemainingPercent,
+                    FormatQuotaReset(fiveHour.ResetsAt, view.Now)));
+            if (quota?.SevenDay is { } sevenDay)
+                _claudeLimitsPanel.AddRow(new QuotaUsageView("Claude weekly limit", sevenDay.RemainingPercent,
+                    FormatQuotaReset(sevenDay.ResetsAt, view.Now)));
+            if (quota is null)
+                _claudeLimitsPanel.AddRow(CreateLabel("Subscription quota: Not provided", 9, FontStyle.Regular));
+            WindowsTheme.Apply(_claudeLimitsPanel);
+        }
+        _claudeErrorLabel.Text = snapshot.ClaudeCodeQuota.UserFacingError ?? string.Empty;
+        _claudeErrorLabel.AccessibleDescription = _claudeErrorLabel.Text;
+        _claudeErrorLabel.Visible = !string.IsNullOrWhiteSpace(_claudeErrorLabel.Text);
+        _claudeErrorLabel.Tag = snapshot.ClaudeCodeQuota.Health == ProviderHealth.NotConfigured ? "muted" : "error";
+        WindowsTheme.Apply(_claudeErrorLabel);
+
         _openCodeHealthIndicator.SetHealth(snapshot.OpenCodeGoQuota.Health);
         if (previous is null || !Equals(previous.OpenCodeGoQuota, snapshot.OpenCodeGoQuota))
         {
@@ -598,6 +635,10 @@ public sealed class StatusPopupForm : Form
             if (previous.CodexRateLimits.Health != snapshot.CodexRateLimits.Health)
             {
                 SetLiveStatus($"Codex status: {StatusViewModel.DescribeHealth(snapshot.CodexRateLimits.Health)}.");
+            }
+            else if (previous.ClaudeCodeQuota.Health != snapshot.ClaudeCodeQuota.Health)
+            {
+                SetLiveStatus($"Claude Code status: {StatusViewModel.DescribeHealth(snapshot.ClaudeCodeQuota.Health)}.");
             }
             else if (previous.OpenCodeGoQuota.Health != snapshot.OpenCodeGoQuota.Health)
             {
@@ -700,7 +741,7 @@ public sealed class StatusPopupForm : Form
     private static ProviderHealthIndicator AddProviderSectionHeader(
         SectionCard target,
         string text,
-        ProviderIconKind iconKind)
+        ProviderIconKind? iconKind = null)
     {
         var label = CreateLabel(text, 10, FontStyle.Bold);
         label.Tag = "accent";
@@ -717,15 +758,14 @@ public sealed class StatusPopupForm : Form
             AccessibleRole = AccessibleRole.Grouping,
             AccessibleName = $"{text} provider status"
         };
-        var icon = new ProviderIcon(iconKind)
-        {
-            Margin = new Padding(0, 0, 6, 0)
-        };
         var health = new ProviderHealthIndicator(text)
         {
             Margin = new Padding(6, 0, 0, 0)
         };
-        header.Controls.Add(icon);
+        if (iconKind is { } kind)
+        {
+            header.Controls.Add(new ProviderIcon(kind) { Margin = new Padding(0, 0, 6, 0) });
+        }
         header.Controls.Add(label);
         header.Controls.Add(health);
         target.AddRow(header);
@@ -837,6 +877,10 @@ public sealed class StatusPopupForm : Form
         var view = new StatusViewModel(_snapshot, now);
         _updatedLabel.Text = $"Updated {FormatAge(_snapshot.CapturedAt, now)}";
         _updatedLabel.AccessibleDescription = _updatedLabel.Text;
+        _claudeUpdatedLabel.Text = _snapshot.ClaudeCodeQuota.Value is { } claude
+            ? $"Checked {FormatAge(claude.ObservedAt, now)} through Claude Code"
+            : "Subscription usage checked through Claude Code";
+        _claudeUpdatedLabel.AccessibleDescription = _claudeUpdatedLabel.Text;
         _awakeLabel.Text = view.AwakeSummary;
         _awakeLabel.AccessibleDescription = view.AwakeSummary;
         _awakeLabel.Tag = _snapshot.Awake.UserFacingError is null ? null : "error";

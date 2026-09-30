@@ -8,12 +8,16 @@ namespace TokenStatus.App.UI;
 public sealed class SettingsForm : Form
 {
     private readonly TextBox _codexPath;
+    private readonly TextBox _claudePath;
+    private readonly NumericUpDown _claudeSeconds;
+    private readonly CheckBox _claudeAutomaticRefresh;
     private PaddedTextBox _openCodeGoApiKey = null!;
     private CheckBox _showOpenCodeGoApiKey = null!;
     private Label _openCodeGoApiKeyState = null!;
     private readonly NumericUpDown _codexLimitsSeconds;
     private readonly NumericUpDown _codexUsageSeconds;
     private readonly NumericUpDown _openCodeSeconds;
+    private readonly CheckBox _codexAutomaticRefresh;
     private readonly CheckBox _quotaNotifications;
     private readonly CheckBox _startWithWindows;
     private readonly Func<AppSettings, string?, bool, Task> _save;
@@ -82,11 +86,29 @@ public sealed class SettingsForm : Form
             AccessibleName = "Codex executable path",
             AccessibleDescription = "Leave blank to detect the Codex executable automatically."
         };
+        _claudePath = new PaddedTextBox
+        {
+            Text = settings.ClaudeExecutablePath ?? string.Empty,
+            Dock = DockStyle.Top,
+            AccessibleName = "Claude Code executable path",
+            AccessibleDescription = "Leave blank to detect the native Claude executable automatically."
+        };
+        _claudeSeconds = CreateSecondsControl(settings.ClaudeRefreshSeconds,
+            AppSettings.MinimumClaudeRefreshSeconds, "Claude subscription refresh interval");
+        _claudeAutomaticRefresh = new CheckBox
+        {
+            Text = "Refresh Claude automatically (turn off during CLI updates)",
+            Checked = settings.ClaudeAutomaticRefreshEnabled,
+            AutoSize = true,
+            AccessibleName = "Automatic Claude refresh",
+            AccessibleDescription = "When off, Claude is queried only by Refresh now."
+        };
         AddProviderSection(content);
+        AddClaudeCodeSection(content);
 
         _codexLimitsSeconds = CreateSecondsControl(
             settings.CodexRateLimitRefreshSeconds,
-            AppSettings.MinimumProviderRefreshSeconds,
+            AppSettings.MinimumCodexRefreshSeconds,
             "Codex quota refresh interval");
         _codexUsageSeconds = CreateSecondsControl(
             settings.CodexUsageRefreshSeconds,
@@ -96,6 +118,14 @@ public sealed class SettingsForm : Form
             settings.OpenCodeRefreshSeconds,
             AppSettings.MinimumProviderRefreshSeconds,
             "OpenCode Go quota refresh interval");
+        _codexAutomaticRefresh = new CheckBox
+        {
+            Text = "Refresh Codex automatically (turn off during CLI updates)",
+            Checked = settings.CodexAutomaticRefreshEnabled,
+            AutoSize = true,
+            AccessibleName = "Automatic Codex refresh",
+            AccessibleDescription = "When off, Codex is queried only by Refresh now."
+        };
         AddRefreshSection(content);
 
         _quotaNotifications = new CheckBox
@@ -231,6 +261,31 @@ public sealed class SettingsForm : Form
         AddSecondsRow(layout, 0, "Codex quota refresh interval", _codexLimitsSeconds);
         AddSecondsRow(layout, 1, "Token activity refresh interval", _codexUsageSeconds);
         AddSecondsRow(layout, 2, "OpenCode Go quota refresh interval", _openCodeSeconds);
+        layout.Controls.Add(_codexAutomaticRefresh, 0, 3);
+        layout.SetColumnSpan(_codexAutomaticRefresh, 3);
+        section.Controls.Add(layout);
+        content.Controls.Add(section);
+    }
+
+    private void AddClaudeCodeSection(TableLayoutPanel content)
+    {
+        var section = CreateSection("Claude Code subscription");
+        var layout = CreateSectionLayout();
+        var instructions = new Label
+        {
+            Text = "Checks your Claude subscription usage. Sign in with claude auth login.",
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            AccessibleName = "Claude Code subscription instructions"
+        };
+        layout.Controls.Add(instructions, 0, 0);
+        layout.SetColumnSpan(instructions, 3);
+        AddFieldLabel(layout, 1, "Claude executable path");
+        layout.Controls.Add(_claudePath, 1, 1);
+        layout.SetColumnSpan(_claudePath, 2);
+        AddSecondsRow(layout, 2, "Subscription refresh interval", _claudeSeconds);
+        layout.Controls.Add(_claudeAutomaticRefresh, 0, 3);
+        layout.SetColumnSpan(_claudeAutomaticRefresh, 3);
         section.Controls.Add(layout);
         content.Controls.Add(section);
     }
@@ -594,12 +649,23 @@ public sealed class SettingsForm : Form
             return;
         }
 
+        var claudePath = NormalizePath(_claudePath.Text, "Claude executable");
+        if (claudePath is null && !string.IsNullOrWhiteSpace(_claudePath.Text))
+        {
+            _claudePath.Focus();
+            Interlocked.Exchange(ref _saveInProgress, 0);
+            return;
+        }
         SetSaveInProgress(true);
         try
         {
             var settings = new AppSettings
             {
                 CodexExecutablePath = codexPath,
+                ClaudeExecutablePath = claudePath,
+                ClaudeAutomaticRefreshEnabled = _claudeAutomaticRefresh.Checked,
+                ClaudeRefreshSeconds = (int)_claudeSeconds.Value,
+                CodexAutomaticRefreshEnabled = _codexAutomaticRefresh.Checked,
                 CodexRateLimitRefreshSeconds = (int)_codexLimitsSeconds.Value,
                 CodexUsageRefreshSeconds = (int)_codexUsageSeconds.Value,
                 OpenCodeRefreshSeconds = (int)_openCodeSeconds.Value,
@@ -650,9 +716,13 @@ public sealed class SettingsForm : Form
     private void SetSaveInProgress(bool inProgress)
     {
         _codexPath.Enabled = !inProgress;
+        _claudePath.Enabled = !inProgress;
+        _claudeSeconds.Enabled = !inProgress;
+        _claudeAutomaticRefresh.Enabled = !inProgress;
         _openCodeGoApiKey.Enabled = !inProgress;
         _showOpenCodeGoApiKey.Enabled = !inProgress;
         _codexLimitsSeconds.Enabled = !inProgress;
+        _codexAutomaticRefresh.Enabled = !inProgress;
         _codexUsageSeconds.Enabled = !inProgress;
         _openCodeSeconds.Enabled = !inProgress;
         _quotaNotifications.Enabled = !inProgress;

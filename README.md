@@ -3,15 +3,16 @@
 [![Build](https://github.com/causercode/slash-status/actions/workflows/release.yml/badge.svg)](https://github.com/causercode/slash-status/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**/status** is a privacy-conscious Windows tray app for viewing Codex activity and quota, checking authoritative OpenCode Go subscription limits, receiving quota alerts, and temporarily keeping the PC awake.
+**/status** is a privacy-conscious Windows tray app for viewing Codex activity and quota, receiving Claude Code subscription usage, checking authoritative OpenCode Go subscription limits, receiving quota alerts, and temporarily keeping the PC awake.
 
 It runs entirely as the current user. Codex authentication stays with the installed Codex CLI, and /status never reads Codex credential files. An optional OpenCode Go API key is stored in Windows Credential Manager rather than in the app's settings or logs.
 
-> /status is an independent project. It is not affiliated with or endorsed by OpenAI or the OpenCode project. Product names and logos belong to their respective owners.
+> /status is an independent project. It is not affiliated with or endorsed by OpenAI, Anthropic, or the OpenCode project. Product names and logos belong to their respective owners.
 
 ## Features
 
 - Codex account, rate-limit windows, reset times, and local activity totals
+- Claude Code five-hour and weekly subscription usage, including sessions in T3 Code
 - OpenCode Go rolling five-hour, weekly, and monthly subscription usage
 - One-time notifications at 25% and 5% remaining, plus quota-reset notices
 - Keep-awake modes for the system or the system and display
@@ -58,7 +59,17 @@ The command should print `True`. When the maintainer has configured Authenticode
 2. The standard OpenAI Codex installation below `%LOCALAPPDATA%`
 3. The current user's `PATH`
 
-The app starts `codex app-server --listen stdio://` and reuses the CLI's existing authentication. If auto-detection fails, choose the exact `codex.exe` path in Settings. Shell shims such as `.cmd`, `.bat`, and `.ps1` files are deliberately not launched.
+The app starts `codex app-server --listen stdio://` for a refresh batch, reuses the CLI's existing authentication, and closes the process as soon as the reads finish. It releases the executable between refreshes so Windows can update it. If auto-detection fails, choose the exact `codex.exe` path in Settings. Shell shims such as `.cmd`, `.bat`, and `.ps1` files are deliberately not launched.
+
+Codex quota refreshes default to five minutes (also the minimum); token activity defaults to thirty minutes. Existing faster quota intervals are raised to five minutes. Turn off **Refresh Codex automatically** in Settings for manual refresh only, including when you need an uninterrupted CLI update. **Refresh now** still works with automatic refresh disabled.
+
+### Claude Code
+
+Install the native Claude Code CLI and sign in to your subscription with `claude auth login`. /status detects `%USERPROFILE%\.local\bin\claude.exe` or the executable on PATH; you can also choose an explicit executable in **Settings**. Shell shims are not launched.
+
+Every five minutes, /status starts a short-lived Claude CLI and requests subscription usage through its read-only `get_usage` control request, using the same approach as [T3 Code](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/provider/Layers/ClaudeProvider.ts). It sends no model prompt, disables tools, hooks, project settings, and MCP servers, and closes the CLI after each check. Authentication and network requests remain with Claude; /status never reads Claude credential files. This works while your sessions run in T3 and while Claude is closed. API-key billing does not provide subscription quota.
+
+The CLI control API is experimental and may change; this integration was verified with Claude Code 2.1.285. Failed or timed-out checks keep the previous quota with an explicit status. **Refresh now** queries immediately. Turn off **Refresh Claude automatically** for manual refresh only, including during CLI updates. A previous /status terminal bridge is automatically removed on startup, restoring the saved status-line setting only if it is still our bridge. Normal usage checks do not modify Claude settings or persist usage responses.
 
 ### OpenCode Go
 

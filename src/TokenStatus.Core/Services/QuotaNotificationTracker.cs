@@ -147,6 +147,15 @@ public sealed class QuotaNotificationTracker
             }
         }
 
+        if (snapshot.ClaudeCodeQuota.Health == ProviderHealth.Healthy &&
+            snapshot.ClaudeCodeQuota.Value is { } claude)
+        {
+            if (claude.FiveHour is { } fiveHour)
+                yield return ToReading("claude:five_hour", "Claude Code", "5-hour", fiveHour, true);
+            if (claude.SevenDay is { } sevenDay)
+                yield return ToReading("claude:seven_day", "Claude Code", "weekly", sevenDay, true);
+        }
+
         if (snapshot.OpenCodeGoQuota.Health == ProviderHealth.Healthy &&
             snapshot.OpenCodeGoQuota.Value is { } openCode)
         {
