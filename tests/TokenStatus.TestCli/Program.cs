@@ -41,6 +41,13 @@ internal static class Program
             if (subtype == "initialize") result = new { };
             else if (subtype == "get_usage" && request.GetProperty("skip_behaviors").GetBoolean())
             {
+                if (File.Exists(Path.Combine(AppContext.BaseDirectory, "hang-claude-usage")))
+                {
+                    // Withhold the reply until the caller closes stdin. This makes
+                    // timeout cleanup tests independent of timer scheduling speed.
+                    while (Console.In.ReadLine() is not null) { }
+                    return 0;
+                }
                 result = new
                 {
                     rate_limits_available = true,

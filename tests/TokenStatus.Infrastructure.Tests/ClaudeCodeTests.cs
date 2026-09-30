@@ -35,7 +35,8 @@ public sealed class ClaudeCodeTests : IDisposable
     public async Task TimeoutClosesProcessAndReleasesExecutable()
     {
         var executable = CopyFixture();
-        var client = new ClaudeCodeQuotaClient(executable, TimeSpan.FromTicks(1));
+        File.WriteAllText(Path.Combine(_directory, "hang-claude-usage"), string.Empty);
+        var client = new ClaudeCodeQuotaClient(executable, TimeSpan.FromSeconds(1));
         var failure = await Assert.ThrowsAsync<ProviderFailureException>(() => client.GetQuotaAsync(CancellationToken.None));
         Assert.Equal("claude_timeout", failure.DiagnosticCode);
         using (new FileStream(executable, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
