@@ -333,6 +333,7 @@ public sealed class JsonLineRpcConnection : IAsyncDisposable
                 if (!process.WaitForExit(2000))
                 {
                     process.Kill(entireProcessTree: true);
+                    process.WaitForExit(2000);
                 }
             }
         }

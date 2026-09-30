@@ -8,6 +8,9 @@ public sealed record AppSnapshot(
     ProviderResult<OpenCodeGoQuota> OpenCodeGoQuota,
     AwakeState Awake)
 {
+    public ProviderResult<ClaudeCodeQuota> ClaudeCodeQuota { get; init; } =
+        ProviderResult<ClaudeCodeQuota>.Loading(CapturedAt);
+
     public static AppSnapshot Initial(DateTimeOffset now) => new(
         now,
         ProviderResult<CodexAccountInfo>.Loading(now),

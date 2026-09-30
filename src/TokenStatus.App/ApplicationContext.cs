@@ -7,6 +7,7 @@ using TokenStatus.Core.Models;
 using TokenStatus.Core.Services;
 using TokenStatus.Infrastructure.Awake;
 using TokenStatus.Infrastructure.Cli;
+using TokenStatus.Infrastructure.Claude;
 using TokenStatus.Infrastructure.Codex;
 using TokenStatus.Infrastructure.Logging;
 using TokenStatus.Infrastructure.OpenCode;
@@ -166,6 +167,14 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
         try
         {
             _settings = await _settingsStore.LoadAsync(CancellationToken.None).ConfigureAwait(true);
+            try
+            {
+                ClaudeStatusLineMigration.RestorePrevious();
+            }
+            catch (Exception exception)
+            {
+                _log.Error("claude", "bridge_migration", "claude_bridge_restore_failed", exception);
+            }
             ReconcileStartupState();
             _awake.Start(AwakeMode.Off, null);
             await RecreateProvidersAsync().ConfigureAwait(true);
@@ -195,7 +204,8 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             _snapshots,
             new SystemClock(),
             RefreshIntervals.FromSettings(_settings),
-            (code, exception) => _log.Error("refresh", "coordinator", code, exception));
+            (code, exception) => _log.Error("refresh", "coordinator", code, exception),
+            new ClaudeCodeQuotaClient(_settings.ClaudeExecutablePath));
         _coordinator.Start();
     }
 
@@ -329,7 +339,8 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             var failed = IsRefreshFailure(snapshot.CodexAccount.Health) ||
                 IsRefreshFailure(snapshot.CodexRateLimits.Health) ||
                 IsRefreshFailure(snapshot.CodexTokenUsage.Health) ||
-                IsRefreshFailure(snapshot.OpenCodeGoQuota.Health);
+                IsRefreshFailure(snapshot.OpenCodeGoQuota.Health) ||
+                IsRefreshFailure(snapshot.ClaudeCodeQuota.Health);
 
             if (failed)
             {
@@ -340,7 +351,7 @@ public sealed class TokenStatusApplicationContext : ApplicationContext
             return new RefreshOutcome(
                 true,
                 notConfigured
-                    ? "Updated just now. OpenCode Go needs configuration."
+                    ? "Updated just now. Some providers need configuration."
                     : "Updated just now.");
         }
         catch (Exception exception)

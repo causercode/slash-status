@@ -15,7 +15,6 @@ public sealed class JsonLineRpcConnectionTests
         await using var connection = new JsonLineRpcConnection(
             executablePath,
             "test",
-            requestTimeout: TimeSpan.FromSeconds(2),
             processArguments: ["codex"]);
 
         var result = await connection.RequestAsync("account/read", new { refreshToken = false });
@@ -34,7 +33,6 @@ public sealed class JsonLineRpcConnectionTests
         await using var connection = new JsonLineRpcConnection(
             executablePath,
             "test",
-            requestTimeout: TimeSpan.FromSeconds(2),
             processArguments: ["codex", "oversized"],
             maximumLineCharacters: 128);
 

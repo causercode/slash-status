@@ -111,6 +111,187 @@ public sealed class HealthAndRefreshTests
         Assert.Equal(1, codex.RateLimitCalls);
         releaseRateLimits.SetResult(new CodexRateLimits([], null));
         await Task.WhenAll(first, second);
+        Assert.Equal(1, codex.DisconnectCalls);
+    }
+
+    [Fact]
+    public async Task PausingAutomaticCodexRefreshStillAllowsManualRefresh()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var codex = new FakeCodex();
+        using var awake = new FakeAwake();
+        await using var coordinator = new RefreshCoordinator(codex, new FakeOpenCodeGo(), awake,
+            new SnapshotStore(AppSnapshot.Initial(now)), new FixedClock(now),
+            new RefreshIntervals(TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(10),
+                TimeSpan.FromHours(1), CodexAutomaticRefreshEnabled: false));
+        coordinator.Start();
+        await Task.Delay(100);
+        Assert.Equal(0, codex.RateLimitCalls);
+        await coordinator.RefreshNowAsync();
+        Assert.Equal(1, codex.RateLimitCalls);
+        Assert.Equal(1, codex.DisconnectCalls);
+    }
+
+    [Fact]
+    public async Task ManualRefreshJoiningScheduledBatchStillRefreshesTokenUsage()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var release = new TaskCompletionSource<CodexRateLimits>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var codex = new FakeCodex { RateLimits = release.Task };
+        using var awake = new FakeAwake();
+        var initial = AppSnapshot.Initial(now) with
+        {
+            CodexRateLimits = new ProviderResult<CodexRateLimits>(ProviderHealth.Healthy,
+                new CodexRateLimits([], null), now.AddMinutes(-6), now.AddMinutes(-6), null, null),
+            CodexTokenUsage = new ProviderResult<CodexTokenUsage>(ProviderHealth.Healthy,
+                new CodexTokenUsage(10, 5, null, 1, 2, []), now, now, null, null)
+        };
+        await using var coordinator = new RefreshCoordinator(codex, new FakeOpenCodeGo(), awake,
+            new SnapshotStore(initial), new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings()));
+        coordinator.Start();
+        await WaitUntilAsync(() => codex.RateLimitCalls == 1);
+        Assert.Equal(0, codex.TokenUsageCalls);
+        var manual = coordinator.RefreshNowAsync();
+        release.SetResult(new CodexRateLimits([], null));
+        await manual;
+        Assert.Equal(1, codex.TokenUsageCalls);
+    }
+
+    [Fact]
+    public async Task ManualOnlyCodexReadingsStillBecomeStaleWithoutCliRequests()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var initial = AppSnapshot.Initial(now) with
+        {
+            CodexRateLimits = new ProviderResult<CodexRateLimits>(ProviderHealth.Healthy,
+                new CodexRateLimits([], null), now.AddHours(-1), now.AddHours(-1), null, null)
+        };
+        var store = new SnapshotStore(initial);
+        var codex = new FakeCodex();
+        using var awake = new FakeAwake();
+        await using var coordinator = new RefreshCoordinator(codex, new FakeOpenCodeGo(), awake, store,
+            new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings { CodexAutomaticRefreshEnabled = false }));
+        coordinator.Start();
+        await WaitUntilAsync(() => store.Current.CodexRateLimits.Health == ProviderHealth.Stale);
+        Assert.Equal(0, codex.RateLimitCalls);
+        Assert.NotNull(store.Current.CodexRateLimits.Value);
+    }
+
+    [Fact]
+    public async Task FailedCodexRefreshReleasesTheProcess()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var codex = new FakeCodex { RateLimits = Task.FromException<CodexRateLimits>(new IOException("fixture")) };
+        using var awake = new FakeAwake();
+        var store = new SnapshotStore(AppSnapshot.Initial(now));
+        await using var coordinator = new RefreshCoordinator(codex, new FakeOpenCodeGo(), awake, store,
+            new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings()));
+        await coordinator.RefreshNowAsync();
+        Assert.Equal(ProviderHealth.Error, store.Current.CodexRateLimits.Health);
+        Assert.Equal(1, codex.DisconnectCalls);
+    }
+
+    [Fact]
+    public async Task ShutdownDuringManualRefreshCancelsAndDisconnects()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var blocked = new TaskCompletionSource<CodexRateLimits>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var codex = new FakeCodex { RateLimits = blocked.Task };
+        using var awake = new FakeAwake();
+        var coordinator = new RefreshCoordinator(codex, new FakeOpenCodeGo(), awake,
+            new SnapshotStore(AppSnapshot.Initial(now)), new FixedClock(now),
+            RefreshIntervals.FromSettings(new AppSettings()));
+        var refresh = coordinator.RefreshNowAsync();
+        await WaitUntilAsync(() => codex.RateLimitCalls == 1);
+        await coordinator.DisposeAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => refresh);
+        Assert.Equal(1, codex.DisconnectCalls);
+    }
+
+    [Fact]
+    public async Task ClaudeAutomaticRefreshCanBePausedWhileManualRefreshStillWorks()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var quota = new ClaudeCodeQuota(now.AddHours(-1), new RateLimitWindow(25, TimeSpan.FromHours(5), null), null);
+        var store = new SnapshotStore(AppSnapshot.Initial(now) with
+        {
+            ClaudeCodeQuota = new ProviderResult<ClaudeCodeQuota>(ProviderHealth.Healthy,
+                quota, quota.ObservedAt, quota.ObservedAt, null, null)
+        });
+        var claude = new FakeClaude(quota);
+        using var awake = new FakeAwake();
+        await using var coordinator = new RefreshCoordinator(new FakeCodex(), new FakeOpenCodeGo(), awake, store,
+            new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings
+            {
+                CodexAutomaticRefreshEnabled = false,
+                ClaudeAutomaticRefreshEnabled = false
+            }), claudeCode: claude);
+        coordinator.Start();
+        await WaitUntilAsync(() => store.Current.ClaudeCodeQuota.Health == ProviderHealth.Stale);
+        Assert.Equal(0, claude.Calls);
+        await coordinator.RefreshNowAsync();
+        Assert.Equal(1, claude.Calls);
+    }
+
+    [Fact]
+    public async Task FailedClaudeQueryKeepsLastKnownQuota()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var quota = new ClaudeCodeQuota(now, new RateLimitWindow(25, TimeSpan.FromHours(5), null), null);
+        var claude = new FakeClaude(quota);
+        using var awake = new FakeAwake();
+        var store = new SnapshotStore(AppSnapshot.Initial(now));
+        await using var coordinator = new RefreshCoordinator(new FakeCodex(), new FakeOpenCodeGo(), awake, store,
+            new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings()), claudeCode: claude);
+        await coordinator.RefreshNowAsync();
+        claude.Fail = true;
+        await coordinator.RefreshNowAsync();
+        Assert.Equal(ProviderHealth.Stale, store.Current.ClaudeCodeQuota.Health);
+        Assert.Same(quota, store.Current.ClaudeCodeQuota.Value);
+        Assert.Equal(now, store.Current.ClaudeCodeQuota.LastSuccessAt);
+    }
+
+    [Fact]
+    public void ClaudeAutomaticIntervalHasFiveMinuteMinimum()
+    {
+        var settings = new AppSettings { ClaudeRefreshSeconds = 1 }.Normalize();
+        Assert.Equal(300, settings.ClaudeRefreshSeconds);
+        Assert.Equal(TimeSpan.FromMinutes(5), RefreshIntervals.FromSettings(settings).ClaudeQuota);
+        Assert.Equal(TimeSpan.FromMinutes(5), RefreshIntervals.FromSettings(new AppSettings()).ClaudeQuota);
+    }
+
+    [Fact]
+    public async Task ClaudeStalenessUsesCheckTimeAndKeepsQuota()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var awake = new FakeAwake();
+        var store = new SnapshotStore(AppSnapshot.Initial(now));
+        var claude = new FakeClaude(new ClaudeCodeQuota(now.AddHours(-1),
+            new RateLimitWindow(25, TimeSpan.FromHours(5), now.AddHours(1)), null));
+        await using var coordinator = new RefreshCoordinator(new FakeCodex(), new FakeOpenCodeGo(), awake, store,
+            new FixedClock(now), RefreshIntervals.FromSettings(new AppSettings()), claudeCode: claude);
+        await coordinator.RefreshNowAsync();
+        Assert.Equal(ProviderHealth.Stale, store.Current.ClaudeCodeQuota.Health);
+        Assert.Equal(75, store.Current.ClaudeCodeQuota.Value!.FiveHour!.RemainingPercent);
+        Assert.Equal(now.AddHours(-1), store.Current.ClaudeCodeQuota.LastSuccessAt);
+    }
+
+    [Fact]
+    public void ClaudeQuotaAffectsTrayHealthAndNotifications()
+    {
+        var now = DateTimeOffset.UtcNow;
+        AppSnapshot Create(int used) => AppSnapshot.Initial(now) with
+        {
+            ClaudeCodeQuota = new ProviderResult<ClaudeCodeQuota>(ProviderHealth.Healthy,
+                new ClaudeCodeQuota(now, new RateLimitWindow(used, TimeSpan.FromHours(5), now.AddHours(1)), null),
+                now, now, null, null)
+        };
+        var tracker = new QuotaNotificationTracker();
+        tracker.Evaluate(Create(60));
+        var notification = Assert.Single(tracker.Evaluate(Create(95)));
+        Assert.Equal("Claude Code", notification.Provider);
+        Assert.Equal(QuotaNotificationKind.Critical, notification.Kind);
+        Assert.Equal(TrayHealth.Red, OverallHealthCalculator.Calculate(Create(95)));
     }
 
     [Fact]
@@ -166,6 +347,8 @@ public sealed class HealthAndRefreshTests
     {
         public Task<CodexRateLimits> RateLimits { get; set; } = Task.FromResult(new CodexRateLimits([], null));
         public int RateLimitCalls { get; private set; }
+        public int DisconnectCalls { get; private set; }
+        public int TokenUsageCalls { get; private set; }
 
         public Task<CodexAccountInfo> GetAccountAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CodexAccountInfo(true, "chatgpt", "plus"));
@@ -173,13 +356,33 @@ public sealed class HealthAndRefreshTests
         public Task<CodexRateLimits> GetRateLimitsAsync(CancellationToken cancellationToken)
         {
             RateLimitCalls++;
-            return RateLimits;
+            return RateLimits.WaitAsync(cancellationToken);
         }
 
-        public Task<CodexTokenUsage> GetTokenUsageAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new CodexTokenUsage(10, 5, null, 1, 2, []));
+        public Task<CodexTokenUsage> GetTokenUsageAsync(CancellationToken cancellationToken)
+        {
+            TokenUsageCalls++;
+            return Task.FromResult(new CodexTokenUsage(10, 5, null, 1, 2, []));
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisconnectAsync()
+        {
+            DisconnectCalls++;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FakeClaude(ClaudeCodeQuota value) : IClaudeCodeQuotaClient
+    {
+        public int Calls;
+        public bool Fail { get; set; }
+        public Task<ClaudeCodeQuota> GetQuotaAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Calls);
+            if (Fail) throw new IOException("fixture");
+            return Task.FromResult(value);
+        }
     }
 
     private sealed class FakeOpenCodeGo : IOpenCodeGoQuotaClient

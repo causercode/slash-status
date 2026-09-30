@@ -15,3 +15,5 @@ If private vulnerability reporting has not yet been enabled for the repository, 
 ## Credential boundaries
 
 /status delegates Codex authentication to the installed Codex CLI. It does not read Codex credential files. OpenCode Go API keys are stored in Windows Credential Manager and are sent only to the fixed OpenCode usage endpoint over HTTPS. Logs are best-effort redacted, but users should still review diagnostic files before sharing them.
+
+Claude Code integration runs a short-lived native CLI for read-only subscription usage control requests. It sends no model prompt and disables tools, hooks, project settings, MCP servers, and IDE attachment. Claude owns authentication and network access; /status does not read Claude credential files or retain raw usage responses. Checks have a 30-second deadline and close the CLI on success, failure, or cancellation. A one-time migration restores a previous terminal status-line setting only when the current command exactly matches the bridge /status installed.

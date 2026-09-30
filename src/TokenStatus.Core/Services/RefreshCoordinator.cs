@@ -6,18 +6,25 @@ namespace TokenStatus.Core.Services;
 public sealed record RefreshIntervals(
     TimeSpan CodexRateLimits,
     TimeSpan CodexTokenUsage,
-    TimeSpan OpenCodeQuota)
+    TimeSpan OpenCodeQuota,
+    bool CodexAutomaticRefreshEnabled = true,
+    TimeSpan? ClaudeQuota = null,
+    bool ClaudeAutomaticRefreshEnabled = true)
 {
     public static RefreshIntervals FromSettings(AppSettings settings) => new(
-        TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumProviderRefreshSeconds, settings.CodexRateLimitRefreshSeconds)),
+        TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumCodexRefreshSeconds, settings.CodexRateLimitRefreshSeconds)),
         TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumTokenUsageRefreshSeconds, settings.CodexUsageRefreshSeconds)),
-        TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumProviderRefreshSeconds, settings.OpenCodeRefreshSeconds)));
+        TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumProviderRefreshSeconds, settings.OpenCodeRefreshSeconds)),
+        settings.CodexAutomaticRefreshEnabled,
+        TimeSpan.FromSeconds(Math.Max(AppSettings.MinimumClaudeRefreshSeconds, settings.ClaudeRefreshSeconds)),
+        settings.ClaudeAutomaticRefreshEnabled);
 }
 
 public sealed class RefreshCoordinator : IAsyncDisposable
 {
     private readonly ICodexUsageClient _codex;
     private readonly IOpenCodeGoQuotaClient _openCodeGo;
+    private readonly IClaudeCodeQuotaClient? _claudeCode;
     private readonly IAwakeController _awake;
     private readonly SnapshotStore _snapshots;
     private readonly IClock _clock;
@@ -27,13 +34,19 @@ public sealed class RefreshCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _rateLimitsGate = new(1, 1);
     private readonly SemaphoreSlim _tokenUsageGate = new(1, 1);
     private readonly SemaphoreSlim _openCodeGoGate = new(1, 1);
+    private readonly SemaphoreSlim _claudeCodeGate = new(1, 1);
     private readonly object _coalescingGate = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly List<Task> _loops = [];
     private readonly TaskSlot _accountRefresh = new();
+    private readonly TaskSlot _codexRefresh = new();
     private readonly TaskSlot _rateLimitsRefresh = new();
     private readonly TaskSlot _tokenUsageRefresh = new();
     private readonly TaskSlot _openCodeGoRefresh = new();
+    private readonly TaskSlot _claudeCodeRefresh = new();
+    private static readonly TimeSpan FreshnessInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ClaudeMaximumAge = TimeSpan.FromMinutes(15);
+    private bool _codexRefreshIsForced;
     private int _started;
     private int _disposed;
 
@@ -44,10 +57,12 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         SnapshotStore snapshots,
         IClock clock,
         RefreshIntervals intervals,
-        Action<string, Exception?>? diagnostic = null)
+        Action<string, Exception?>? diagnostic = null,
+        IClaudeCodeQuotaClient? claudeCode = null)
     {
         _codex = codex;
         _openCodeGo = openCodeGo;
+        _claudeCode = claudeCode;
         _awake = awake;
         _snapshots = snapshots;
         _clock = clock;
@@ -64,20 +79,127 @@ public sealed class RefreshCoordinator : IAsyncDisposable
             return;
         }
 
-        _loops.Add(Task.Run(() => RunLoopAsync(RefreshAccountAsync, _intervals.CodexRateLimits, MarkAccountStaleAsync)));
-        _loops.Add(Task.Run(() => RunLoopAsync(RefreshRateLimitsAsync, _intervals.CodexRateLimits, MarkRateLimitsStaleAsync)));
-        _loops.Add(Task.Run(() => RunLoopAsync(RefreshTokenUsageAsync, _intervals.CodexTokenUsage, MarkTokenUsageStaleAsync)));
+        if (_intervals.CodexAutomaticRefreshEnabled)
+        {
+            var interval = _intervals.CodexRateLimits < _intervals.CodexTokenUsage
+                ? _intervals.CodexRateLimits : _intervals.CodexTokenUsage;
+            _loops.Add(Task.Run(() => RunLoopAsync(
+                token => RefreshCodexAsync(false, token), interval, () => Task.CompletedTask)));
+        }
         _loops.Add(Task.Run(() => RunLoopAsync(RefreshOpenCodeGoAsync, _intervals.OpenCodeQuota, MarkOpenCodeGoStaleAsync)));
+        if (_claudeCode is not null && _intervals.ClaudeAutomaticRefreshEnabled)
+        {
+            _loops.Add(Task.Run(() => RunLoopAsync(RefreshClaudeCodeAsync,
+                _intervals.ClaudeQuota ?? TimeSpan.FromMinutes(5), MarkClaudeStaleAsync)));
+        }
+        // Freshness checks remain active in manual-only mode, without starting a CLI.
+        _loops.Add(Task.Run(() => RunLoopAsync(
+            RefreshLocalStateAsync, FreshnessInterval, () => Task.CompletedTask)));
     }
 
     public async Task RefreshNowAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
         await Task.WhenAll(
-            RefreshAccountAsync(cancellationToken),
-            RefreshRateLimitsAsync(cancellationToken),
-            RefreshTokenUsageAsync(cancellationToken),
-            RefreshOpenCodeGoAsync(cancellationToken)).ConfigureAwait(false);
+            RefreshCodexAsync(true, _shutdown.Token),
+            RefreshOpenCodeGoAsync(_shutdown.Token),
+            RefreshClaudeCodeAsync(_shutdown.Token)).WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RefreshCodexAsync(bool force, CancellationToken cancellationToken)
+    {
+        Task refresh;
+        bool followUp;
+        lock (_coalescingGate)
+        {
+            // A scheduled batch may omit token usage. A manual request must still
+            // refresh every Codex value, even when it joins that active batch.
+            followUp = force && !_codexRefreshIsForced &&
+                _codexRefresh.Current is { IsCompleted: false };
+            refresh = Coalesce(_codexRefresh, () =>
+            {
+                _codexRefreshIsForced = force;
+                return RefreshCodexCoreAsync(force, cancellationToken);
+            });
+        }
+        await refresh.ConfigureAwait(false);
+        if (followUp)
+        {
+            await RefreshCodexAsync(true, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RefreshCodexCoreAsync(bool force, CancellationToken cancellationToken)
+    {
+        var snapshot = _snapshots.Current;
+        var now = _clock.UtcNow;
+        var tasks = new List<Task>();
+        try
+        {
+            if (force || now - snapshot.CodexRateLimits.LastAttemptAt >= _intervals.CodexRateLimits ||
+                snapshot.CodexRateLimits.Health == ProviderHealth.Loading)
+            {
+                tasks.Add(RefreshAccountAsync(cancellationToken));
+                tasks.Add(RefreshRateLimitsAsync(cancellationToken));
+            }
+            if (force || now - snapshot.CodexTokenUsage.LastAttemptAt >= _intervals.CodexTokenUsage ||
+                snapshot.CodexTokenUsage.Health == ProviderHealth.Loading)
+            {
+                tasks.Add(RefreshTokenUsageAsync(cancellationToken));
+            }
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        finally
+        {
+            await _codex.DisconnectAsync().ConfigureAwait(false);
+        }
+    }
+
+    private Task MarkCodexStaleAsync() => Task.WhenAll(
+        MarkAccountStaleAsync(), MarkRateLimitsStaleAsync(), MarkTokenUsageStaleAsync());
+
+    private Task RefreshLocalStateAsync(CancellationToken cancellationToken) => Task.WhenAll(
+        MarkClaudeStaleAsync(), MarkCodexStaleAsync());
+
+    private Task RefreshClaudeCodeAsync(CancellationToken cancellationToken) => _claudeCode is null
+        ? Task.CompletedTask
+        : Coalesce(_claudeCodeRefresh, () => RefreshClaudeCodeCoreAsync(cancellationToken));
+
+    private async Task RefreshClaudeCodeCoreAsync(CancellationToken cancellationToken)
+    {
+        await RunExclusiveAsync(_claudeCodeGate, async () =>
+        {
+            var attempt = _clock.UtcNow;
+            try
+            {
+                var value = await _claudeCode!.GetQuotaAsync(cancellationToken).ConfigureAwait(false);
+                var stale = attempt - value.ObservedAt > ClaudeMaximumAge ||
+                    value.ObservedAt > attempt.AddMinutes(5);
+                _snapshots.Update(snapshot => snapshot with
+                {
+                    CapturedAt = _clock.UtcNow,
+                    ClaudeCodeQuota = new ProviderResult<ClaudeCodeQuota>(
+                        stale ? ProviderHealth.Stale : ProviderHealth.Healthy,
+                        value, attempt, value.ObservedAt,
+                        stale ? "The last Claude usage check is stale. Click Refresh to try again." : null,
+                        stale ? "claude_usage_stale" : null)
+                });
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (RecordFailure(
+                "claude_code", exception, attempt, _snapshots.Current.ClaudeCodeQuota,
+                result => _snapshots.Update(snapshot => snapshot with
+                {
+                    CapturedAt = _clock.UtcNow,
+                    ClaudeCodeQuota = result
+                })))
+            {
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RunLoopAsync(
@@ -297,6 +419,11 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         _intervals.OpenCodeQuota,
         (snapshot, result) => snapshot with { CapturedAt = _clock.UtcNow, OpenCodeGoQuota = result });
 
+    private Task MarkClaudeStaleAsync() => MarkStaleAsync(
+        snapshot => snapshot.ClaudeCodeQuota,
+        _intervals.ClaudeQuota ?? TimeSpan.FromMinutes(5),
+        (snapshot, result) => snapshot with { CapturedAt = _clock.UtcNow, ClaudeCodeQuota = result });
+
     private Task MarkStaleAsync<T>(
         Func<AppSnapshot, ProviderResult<T>> select,
         TimeSpan interval,
@@ -394,7 +521,13 @@ public sealed class RefreshCoordinator : IAsyncDisposable
 
         try
         {
-            await Task.WhenAll(_loops).ConfigureAwait(false);
+            Task[] active;
+            lock (_coalescingGate)
+            {
+                active = new[] { _codexRefresh.Current, _openCodeGoRefresh.Current, _claudeCodeRefresh.Current }
+                    .OfType<Task>().ToArray();
+            }
+            await Task.WhenAll(_loops.Concat(active)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -408,6 +541,7 @@ public sealed class RefreshCoordinator : IAsyncDisposable
         _rateLimitsGate.Dispose();
         _tokenUsageGate.Dispose();
         _openCodeGoGate.Dispose();
+        _claudeCodeGate.Dispose();
         _shutdown.Dispose();
         await _codex.DisposeAsync().ConfigureAwait(false);
         if (_openCodeGo is IDisposable disposableOpenCodeGo)

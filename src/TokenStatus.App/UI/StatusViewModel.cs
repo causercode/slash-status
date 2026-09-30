@@ -47,7 +47,10 @@ public sealed class StatusViewModel
         var awake = snapshot.Awake.GetRemaining(DateTimeOffset.UtcNow) is { } remaining
             ? FormatShortDuration(remaining)
             : snapshot.Awake.IsActive ? "on" : "off";
-        var text = $"Codex {codex}/{secondary} left | OpenCode Go {openCode} left | Awake {awake}";
+        var claude = snapshot.ClaudeCodeQuota.Value is { } claudeQuota
+            ? $"{claudeQuota.FiveHour?.RemainingPercent.ToString() ?? "--"}/{claudeQuota.SevenDay?.RemainingPercent.ToString() ?? "--"}%"
+            : "--/--";
+        var text = $"Codex {codex}/{secondary} | Claude {claude} | Go {openCode} | Awake {awake}";
         return text.Length <= 63 ? text : text[..63];
     }
 
